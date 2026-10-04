@@ -152,7 +152,7 @@ pub fn analyze(source: &dyn Dialect, target: &dyn Dialect, sql: &str) -> Result<
         for f in &mut batch {
             f.location = Some(loc.clone());
         }
-        batch.sort_by(|a, b| b.severity.cmp(&a.severity));
+        batch.sort_by_key(|f| std::cmp::Reverse(f.severity));
         for f in batch {
             if !findings.contains(&f) {
                 findings.push(f);

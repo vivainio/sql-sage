@@ -86,7 +86,11 @@ fn main() -> ExitCode {
         return match check_compatibility(kind, target, &sql) {
             Ok(report) => {
                 print!("{report}");
-                if report.is_compatible() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+                if report.is_compatible() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
             }
             Err(e) => fail(&format!("syntax error: {e}")),
         };

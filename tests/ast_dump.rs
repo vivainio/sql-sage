@@ -1,7 +1,7 @@
 use sql_sage::ast_dump::{compact, try_compact, try_yaml, yaml};
-use yaml_rust2::{Yaml, YamlLoader};
 use sql_sage::dialect::DialectKind::{self, *};
 use sql_sage::parse_sql;
+use yaml_rust2::{Yaml, YamlLoader};
 
 const CORPUS: &[&str] = &[
     "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 5) SELECT t.*, count(*) OVER (PARTITION BY t.k ORDER BY t.v), CASE WHEN x IS NULL THEN 0 ELSE 1 END FROM t LEFT JOIN u ON t.id = u.id JOIN (SELECT 1 AS id) s USING (id) WHERE x NOT IN (1, 2) AND y BETWEEN 1 AND 2 AND NOT EXISTS (SELECT 1 FROM z) GROUP BY t.k HAVING count(DISTINCT t.v) > 1 ORDER BY 1 DESC NULLS LAST LIMIT 5 OFFSET 2",
@@ -78,7 +78,6 @@ fn every_statement_shape_dumps_without_fallback() {
     }
 }
 
-
 fn load(doc: &str) -> Vec<Yaml> {
     YamlLoader::load_from_str(doc).unwrap_or_else(|e| panic!("not valid YAML: {e}\n{doc}"))
 }
@@ -125,7 +124,8 @@ fn yaml_output() {
 /// Strings that YAML would reinterpret must stay strings; numbers and booleans stay typed.
 #[test]
 fn yaml_preserves_types() {
-    let sql = "SELECT 'true', 'no', 'null', 'a: b', '1', '', '2020-01-01', '#x', 'it''s \"q\" é 日本', 007, 1.5, TRUE, \
+    let sql =
+        "SELECT 'true', 'no', 'null', 'a: b', '1', '', '2020-01-01', '#x', 'it''s \"q\" é 日本', 007, 1.5, TRUE, \
                \"Mixed Case\", s.t.c, :id FROM u JOIN v ON u.id = v.id";
     let stmts = parse_sql(Sqlite.dialect().as_ref(), sql).unwrap();
     let docs = load(&yaml(&stmts[0]));

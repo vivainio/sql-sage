@@ -45,93 +45,185 @@ pub trait Dialect: Debug {
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
         ch == '"'
     }
-    fn supports_nested_block_comments(&self) -> bool { false }
+    fn supports_nested_block_comments(&self) -> bool {
+        false
+    }
     /// `E'...\n'` strings.
-    fn supports_escape_strings(&self) -> bool { false }
+    fn supports_escape_strings(&self) -> bool {
+        false
+    }
     /// `q'[...]'` strings.
-    fn supports_q_quote_strings(&self) -> bool { false }
+    fn supports_q_quote_strings(&self) -> bool {
+        false
+    }
     /// `$$...$$` and `$tag$...$tag$` strings.
-    fn supports_dollar_quoted_strings(&self) -> bool { false }
+    fn supports_dollar_quoted_strings(&self) -> bool {
+        false
+    }
     /// `$1` / `$name`
-    fn supports_dollar_placeholders(&self) -> bool { false }
+    fn supports_dollar_placeholders(&self) -> bool {
+        false
+    }
     /// `?` / `?1`
-    fn supports_question_placeholders(&self) -> bool { false }
+    fn supports_question_placeholders(&self) -> bool {
+        false
+    }
     /// `:name` / `:1`
-    fn supports_colon_placeholders(&self) -> bool { false }
+    fn supports_colon_placeholders(&self) -> bool {
+        false
+    }
     /// `@name`
-    fn supports_at_placeholders(&self) -> bool { false }
+    fn supports_at_placeholders(&self) -> bool {
+        false
+    }
 
     // ---- expressions ----
-    fn supports_double_colon_cast(&self) -> bool { false }
-    fn supports_ilike(&self) -> bool { false }
-    fn supports_glob(&self) -> bool { false }
-    fn supports_json_arrows(&self) -> bool { false }
+    fn supports_double_colon_cast(&self) -> bool {
+        false
+    }
+    fn supports_ilike(&self) -> bool {
+        false
+    }
+    fn supports_glob(&self) -> bool {
+        false
+    }
+    fn supports_json_arrows(&self) -> bool {
+        false
+    }
 
     // ---- queries ----
-    fn supports_limit(&self) -> bool { false }
+    fn supports_limit(&self) -> bool {
+        false
+    }
     /// `LIMIT offset, count`
-    fn supports_limit_comma(&self) -> bool { false }
+    fn supports_limit_comma(&self) -> bool {
+        false
+    }
     /// `MINUS` as a synonym of `EXCEPT`
-    fn supports_minus_operator(&self) -> bool { false }
-    fn supports_distinct_on(&self) -> bool { false }
+    fn supports_minus_operator(&self) -> bool {
+        false
+    }
+    fn supports_distinct_on(&self) -> bool {
+        false
+    }
 
     // ---- DML / DDL ----
-    fn supports_returning(&self) -> bool { false }
-    fn supports_insert_or(&self) -> bool { false }
-    fn supports_on_conflict(&self) -> bool { false }
-    fn supports_update_from(&self) -> bool { false }
+    fn supports_returning(&self) -> bool {
+        false
+    }
+    fn supports_insert_or(&self) -> bool {
+        false
+    }
+    fn supports_on_conflict(&self) -> bool {
+        false
+    }
+    fn supports_update_from(&self) -> bool {
+        false
+    }
     /// `CREATE TABLE t (a, b)` — column types are optional.
-    fn supports_untyped_columns(&self) -> bool { false }
+    fn supports_untyped_columns(&self) -> bool {
+        false
+    }
 
     // ---- emission (see `crate::emit`) ----
     /// Character used to quote identifiers when emitting.
-    fn identifier_quote(&self) -> char { '"' }
+    fn identifier_quote(&self) -> char {
+        '"'
+    }
     /// `FETCH FIRST n ROWS ONLY`
-    fn supports_fetch_first(&self) -> bool { false }
+    fn supports_fetch_first(&self) -> bool {
+        false
+    }
     /// `OFFSET` is only valid after `LIMIT` (SQLite).
-    fn requires_limit_for_offset(&self) -> bool { false }
+    fn requires_limit_for_offset(&self) -> bool {
+        false
+    }
     /// `OFFSET n ROWS` (Oracle) instead of `OFFSET n`.
-    fn offset_requires_rows(&self) -> bool { false }
+    fn offset_requires_rows(&self) -> bool {
+        false
+    }
     /// `FROM t AS x` (Oracle only accepts `FROM t x`).
-    fn supports_table_alias_as(&self) -> bool { true }
-    fn supports_boolean_literals(&self) -> bool { true }
-    fn supports_autoincrement(&self) -> bool { false }
-    fn supports_identity_columns(&self) -> bool { true }
-    fn temporary_table_keyword(&self) -> &'static str { "TEMPORARY" }
+    fn supports_table_alias_as(&self) -> bool {
+        true
+    }
+    fn supports_boolean_literals(&self) -> bool {
+        true
+    }
+    fn supports_autoincrement(&self) -> bool {
+        false
+    }
+    fn supports_identity_columns(&self) -> bool {
+        true
+    }
+    fn temporary_table_keyword(&self) -> &'static str {
+        "TEMPORARY"
+    }
     /// `IF [NOT] EXISTS` in DDL.
-    fn supports_if_exists(&self) -> bool { true }
-    fn supports_multirow_values(&self) -> bool { true }
+    fn supports_if_exists(&self) -> bool {
+        true
+    }
+    fn supports_multirow_values(&self) -> bool {
+        true
+    }
     /// `SELECT` must have a `FROM` clause (Oracle: `FROM dual`).
-    fn requires_from_clause(&self) -> bool { false }
-    fn supports_modulo_operator(&self) -> bool { true }
-    fn supports_recursive_keyword(&self) -> bool { true }
+    fn requires_from_clause(&self) -> bool {
+        false
+    }
+    fn supports_modulo_operator(&self) -> bool {
+        true
+    }
+    fn supports_recursive_keyword(&self) -> bool {
+        true
+    }
     /// `DATE '2020-01-01'`
-    fn supports_typed_literals(&self) -> bool { true }
-    fn supports_partial_index(&self) -> bool { true }
+    fn supports_typed_literals(&self) -> bool {
+        true
+    }
+    fn supports_partial_index(&self) -> bool {
+        true
+    }
     /// Spell a bind parameter; `None` if the dialect cannot express it.
-    fn format_placeholder(&self, _kind: &PlaceholderKind) -> Option<String> { None }
+    fn format_placeholder(&self, _kind: &PlaceholderKind) -> Option<String> {
+        None
+    }
 
     // ---- compatibility analysis (see `crate::compat`) ----
     /// Unquoted identifier resolution.
-    fn identifier_fold(&self) -> IdentifierFold { IdentifierFold::Insensitive }
+    fn identifier_fold(&self) -> IdentifierFold {
+        IdentifierFold::Insensitive
+    }
     /// `''` is NULL (Oracle).
-    fn empty_string_is_null(&self) -> bool { false }
+    fn empty_string_is_null(&self) -> bool {
+        false
+    }
     /// `a / b` truncates for integer operands.
-    fn integer_division_truncates(&self) -> bool { true }
+    fn integer_division_truncates(&self) -> bool {
+        true
+    }
     /// `'a' || NULL` yields `'a'` rather than NULL (Oracle).
-    fn concat_null_is_empty(&self) -> bool { false }
+    fn concat_null_is_empty(&self) -> bool {
+        false
+    }
     /// Is `lower_name` a built-in function of this dialect (latest release)?
     /// See [`crate::functions`]. Custom dialects default to "yes".
-    fn has_function(&self, _lower_name: &str) -> bool { true }
+    fn has_function(&self, _lower_name: &str) -> bool {
+        true
+    }
     /// A function that exists here under the same name but means something else
     /// when called with `nargs` arguments (e.g. Postgres `decode`).
-    fn function_collision(&self, _upper_name: &str, _nargs: usize) -> Option<&'static str> { None }
+    fn function_collision(&self, _upper_name: &str, _nargs: usize) -> Option<&'static str> {
+        None
+    }
     /// If `upper_name` (a function or pseudo-column, upper-cased) does **not**
     /// exist in this dialect, a short hint on what to use instead.
-    fn function_hint(&self, _upper_name: &str) -> Option<&'static str> { None }
+    fn function_hint(&self, _upper_name: &str) -> Option<&'static str> {
+        None
+    }
 
     /// Translate a data type into this dialect's spelling.
-    fn map_data_type(&self, dt: &DataType) -> Result<DataType, String> { Ok(strip_length_units(dt)) }
+    fn map_data_type(&self, dt: &DataType) -> Result<DataType, String> {
+        Ok(strip_length_units(dt))
+    }
 }
 
 /// `VARCHAR2(100 BYTE)` -> `VARCHAR2(100)`
@@ -164,29 +256,65 @@ fn retype(dt: &DataType, name: &str, args: Option<Vec<&str>>) -> DataType {
 pub struct PostgreSqlDialect;
 
 impl Dialect for PostgreSqlDialect {
-    fn name(&self) -> &'static str { "postgres" }
+    fn name(&self) -> &'static str {
+        "postgres"
+    }
     fn is_identifier_part(&self, ch: char) -> bool {
         ch.is_alphanumeric() || ch == '_' || ch == '$'
     }
-    fn supports_nested_block_comments(&self) -> bool { true }
-    fn supports_escape_strings(&self) -> bool { true }
-    fn supports_dollar_quoted_strings(&self) -> bool { true }
-    fn supports_dollar_placeholders(&self) -> bool { true }
-    fn supports_double_colon_cast(&self) -> bool { true }
-    fn supports_ilike(&self) -> bool { true }
-    fn supports_json_arrows(&self) -> bool { true }
-    fn supports_limit(&self) -> bool { true }
-    fn supports_distinct_on(&self) -> bool { true }
-    fn supports_returning(&self) -> bool { true }
-    fn supports_on_conflict(&self) -> bool { true }
-    fn supports_update_from(&self) -> bool { true }
-    fn supports_fetch_first(&self) -> bool { true }
-    fn identifier_fold(&self) -> IdentifierFold { IdentifierFold::Lower }
-    fn has_function(&self, name: &str) -> bool { crate::functions::contains(DialectKind::Postgres, name) }
+    fn supports_nested_block_comments(&self) -> bool {
+        true
+    }
+    fn supports_escape_strings(&self) -> bool {
+        true
+    }
+    fn supports_dollar_quoted_strings(&self) -> bool {
+        true
+    }
+    fn supports_dollar_placeholders(&self) -> bool {
+        true
+    }
+    fn supports_double_colon_cast(&self) -> bool {
+        true
+    }
+    fn supports_ilike(&self) -> bool {
+        true
+    }
+    fn supports_json_arrows(&self) -> bool {
+        true
+    }
+    fn supports_limit(&self) -> bool {
+        true
+    }
+    fn supports_distinct_on(&self) -> bool {
+        true
+    }
+    fn supports_returning(&self) -> bool {
+        true
+    }
+    fn supports_on_conflict(&self) -> bool {
+        true
+    }
+    fn supports_update_from(&self) -> bool {
+        true
+    }
+    fn supports_fetch_first(&self) -> bool {
+        true
+    }
+    fn identifier_fold(&self) -> IdentifierFold {
+        IdentifierFold::Lower
+    }
+    fn has_function(&self, name: &str) -> bool {
+        crate::functions::contains(DialectKind::Postgres, name)
+    }
     fn function_collision(&self, name: &str, nargs: usize) -> Option<&'static str> {
         match name {
-            "DECODE" if nargs >= 3 => Some("postgres decode(text, format) decodes base64/hex; Oracle's DECODE(x, search, result, ...) needs CASE"),
-            "MIN" | "MAX" if nargs >= 2 => Some("with several arguments this is SQLite's scalar form; use LEAST / GREATEST"),
+            "DECODE" if nargs >= 3 => Some(
+                "postgres decode(text, format) decodes base64/hex; Oracle's DECODE(x, search, result, ...) needs CASE",
+            ),
+            "MIN" | "MAX" if nargs >= 2 => {
+                Some("with several arguments this is SQLite's scalar form; use LEAST / GREATEST")
+            }
             _ => None,
         }
     }
@@ -233,28 +361,66 @@ impl Dialect for PostgreSqlDialect {
 pub struct SqliteDialect;
 
 impl Dialect for SqliteDialect {
-    fn name(&self) -> &'static str { "sqlite" }
+    fn name(&self) -> &'static str {
+        "sqlite"
+    }
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
         matches!(ch, '"' | '`' | '[')
     }
-    fn supports_dollar_placeholders(&self) -> bool { true }
-    fn supports_question_placeholders(&self) -> bool { true }
-    fn supports_colon_placeholders(&self) -> bool { true }
-    fn supports_at_placeholders(&self) -> bool { true }
-    fn supports_glob(&self) -> bool { true }
-    fn supports_json_arrows(&self) -> bool { true }
-    fn supports_limit(&self) -> bool { true }
-    fn supports_limit_comma(&self) -> bool { true }
-    fn supports_returning(&self) -> bool { true }
-    fn supports_insert_or(&self) -> bool { true }
-    fn supports_on_conflict(&self) -> bool { true }
-    fn supports_update_from(&self) -> bool { true }
-    fn supports_untyped_columns(&self) -> bool { true }
-    fn requires_limit_for_offset(&self) -> bool { true }
-    fn supports_autoincrement(&self) -> bool { true }
-    fn supports_identity_columns(&self) -> bool { false }
-    fn supports_typed_literals(&self) -> bool { false }
-    fn has_function(&self, name: &str) -> bool { crate::functions::contains(DialectKind::Sqlite, name) }
+    fn supports_dollar_placeholders(&self) -> bool {
+        true
+    }
+    fn supports_question_placeholders(&self) -> bool {
+        true
+    }
+    fn supports_colon_placeholders(&self) -> bool {
+        true
+    }
+    fn supports_at_placeholders(&self) -> bool {
+        true
+    }
+    fn supports_glob(&self) -> bool {
+        true
+    }
+    fn supports_json_arrows(&self) -> bool {
+        true
+    }
+    fn supports_limit(&self) -> bool {
+        true
+    }
+    fn supports_limit_comma(&self) -> bool {
+        true
+    }
+    fn supports_returning(&self) -> bool {
+        true
+    }
+    fn supports_insert_or(&self) -> bool {
+        true
+    }
+    fn supports_on_conflict(&self) -> bool {
+        true
+    }
+    fn supports_update_from(&self) -> bool {
+        true
+    }
+    fn supports_untyped_columns(&self) -> bool {
+        true
+    }
+    fn requires_limit_for_offset(&self) -> bool {
+        true
+    }
+    fn supports_autoincrement(&self) -> bool {
+        true
+    }
+    fn supports_identity_columns(&self) -> bool {
+        false
+    }
+    fn supports_typed_literals(&self) -> bool {
+        false
+    }
+    fn has_function(&self, name: &str) -> bool {
+        crate::functions::contains(DialectKind::Sqlite, name)
+    }
     fn function_hint(&self, name: &str) -> Option<&'static str> {
         Some(match name {
             "NVL" => "use IFNULL or COALESCE",
@@ -293,33 +459,75 @@ impl Dialect for SqliteDialect {
 pub struct OracleDialect;
 
 impl Dialect for OracleDialect {
-    fn name(&self) -> &'static str { "oracle" }
+    fn name(&self) -> &'static str {
+        "oracle"
+    }
     fn is_identifier_part(&self, ch: char) -> bool {
         ch.is_alphanumeric() || matches!(ch, '_' | '$' | '#')
     }
-    fn supports_q_quote_strings(&self) -> bool { true }
-    fn supports_colon_placeholders(&self) -> bool { true }
-    fn supports_minus_operator(&self) -> bool { true }
-    fn supports_fetch_first(&self) -> bool { true }
-    fn offset_requires_rows(&self) -> bool { true }
-    fn supports_table_alias_as(&self) -> bool { false }
-    fn supports_boolean_literals(&self) -> bool { false }
-    fn temporary_table_keyword(&self) -> &'static str { "GLOBAL TEMPORARY" }
-    fn supports_if_exists(&self) -> bool { false }
-    fn supports_multirow_values(&self) -> bool { false }
-    fn requires_from_clause(&self) -> bool { true }
-    fn supports_modulo_operator(&self) -> bool { false }
-    fn supports_recursive_keyword(&self) -> bool { false }
-    fn supports_partial_index(&self) -> bool { false }
-    fn identifier_fold(&self) -> IdentifierFold { IdentifierFold::Upper }
-    fn empty_string_is_null(&self) -> bool { true }
-    fn integer_division_truncates(&self) -> bool { false }
-    fn concat_null_is_empty(&self) -> bool { true }
-    fn has_function(&self, name: &str) -> bool { crate::functions::contains(DialectKind::Oracle, name) }
+    fn supports_q_quote_strings(&self) -> bool {
+        true
+    }
+    fn supports_colon_placeholders(&self) -> bool {
+        true
+    }
+    fn supports_minus_operator(&self) -> bool {
+        true
+    }
+    fn supports_fetch_first(&self) -> bool {
+        true
+    }
+    fn offset_requires_rows(&self) -> bool {
+        true
+    }
+    fn supports_table_alias_as(&self) -> bool {
+        false
+    }
+    fn supports_boolean_literals(&self) -> bool {
+        false
+    }
+    fn temporary_table_keyword(&self) -> &'static str {
+        "GLOBAL TEMPORARY"
+    }
+    fn supports_if_exists(&self) -> bool {
+        false
+    }
+    fn supports_multirow_values(&self) -> bool {
+        false
+    }
+    fn requires_from_clause(&self) -> bool {
+        true
+    }
+    fn supports_modulo_operator(&self) -> bool {
+        false
+    }
+    fn supports_recursive_keyword(&self) -> bool {
+        false
+    }
+    fn supports_partial_index(&self) -> bool {
+        false
+    }
+    fn identifier_fold(&self) -> IdentifierFold {
+        IdentifierFold::Upper
+    }
+    fn empty_string_is_null(&self) -> bool {
+        true
+    }
+    fn integer_division_truncates(&self) -> bool {
+        false
+    }
+    fn concat_null_is_empty(&self) -> bool {
+        true
+    }
+    fn has_function(&self, name: &str) -> bool {
+        crate::functions::contains(DialectKind::Oracle, name)
+    }
     fn function_collision(&self, name: &str, nargs: usize) -> Option<&'static str> {
         match name {
             "CONCAT" if nargs != 2 => Some("Oracle CONCAT takes exactly two arguments; chain with ||"),
-            "MIN" | "MAX" if nargs >= 2 => Some("with several arguments this is SQLite's scalar form; use LEAST / GREATEST"),
+            "MIN" | "MAX" if nargs >= 2 => {
+                Some("with several arguments this is SQLite's scalar form; use LEAST / GREATEST")
+            }
             _ => None,
         }
     }

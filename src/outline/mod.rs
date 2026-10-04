@@ -34,7 +34,7 @@
 mod ordered;
 mod tight;
 
-use crate::ast::{Expr, BinaryOperator, Statement};
+use crate::ast::{BinaryOperator, Expr, Statement};
 use crate::emit::Emitter;
 use std::str::FromStr;
 
@@ -63,7 +63,11 @@ pub fn render(stmts: &[Statement], syntax: Syntax) -> String {
 impl Statement {
     pub fn to_outline(&self, syntax: Syntax) -> String {
         let o = Outline::new(syntax == Syntax::Tight);
-        if o.tight { o.tight_statement(self) } else { o.statement(self) }
+        if o.tight {
+            o.tight_statement(self)
+        } else {
+            o.statement(self)
+        }
     }
 }
 
@@ -118,5 +122,9 @@ pub(super) fn flatten_and<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
 }
 
 pub(super) fn neg(negated: bool) -> &'static str {
-    if negated { "not " } else { "" }
+    if negated {
+        "not "
+    } else {
+        ""
+    }
 }

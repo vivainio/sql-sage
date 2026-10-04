@@ -14,11 +14,20 @@ fn err(from: DialectKind, to: DialectKind, sql: &str) -> String {
 
 #[test]
 fn pagination() {
-    assert_eq!(t(Postgres, Oracle, "SELECT a FROM t LIMIT 10 OFFSET 5"), "SELECT a FROM t OFFSET 5 ROWS FETCH FIRST 10 ROWS ONLY;");
-    assert_eq!(t(Oracle, Postgres, "SELECT a FROM t OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY"), "SELECT a FROM t LIMIT 10 OFFSET 5;");
+    assert_eq!(
+        t(Postgres, Oracle, "SELECT a FROM t LIMIT 10 OFFSET 5"),
+        "SELECT a FROM t OFFSET 5 ROWS FETCH FIRST 10 ROWS ONLY;"
+    );
+    assert_eq!(
+        t(Oracle, Postgres, "SELECT a FROM t OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY"),
+        "SELECT a FROM t LIMIT 10 OFFSET 5;"
+    );
     assert_eq!(t(Oracle, Sqlite, "SELECT a FROM t FETCH FIRST ROW ONLY"), "SELECT a FROM t LIMIT 1;");
     assert_eq!(t(Postgres, Sqlite, "SELECT a FROM t OFFSET 5"), "SELECT a FROM t LIMIT -1 OFFSET 5;");
-    assert_eq!(t(Sqlite, Oracle, "SELECT a FROM t LIMIT 5, 10"), "SELECT a FROM t OFFSET 5 ROWS FETCH FIRST 10 ROWS ONLY;");
+    assert_eq!(
+        t(Sqlite, Oracle, "SELECT a FROM t LIMIT 5, 10"),
+        "SELECT a FROM t OFFSET 5 ROWS FETCH FIRST 10 ROWS ONLY;"
+    );
     assert!(err(Oracle, Sqlite, "SELECT a FROM t FETCH FIRST 5 ROWS WITH TIES").contains("sqlite"));
 }
 
@@ -39,7 +48,10 @@ fn placeholders() {
 
 #[test]
 fn expressions() {
-    assert_eq!(t(Postgres, Sqlite, "SELECT a ILIKE 'x%', b::int FROM t"), "SELECT LOWER(a) LIKE LOWER('x%'), CAST(b AS INT) FROM t;");
+    assert_eq!(
+        t(Postgres, Sqlite, "SELECT a ILIKE 'x%', b::int FROM t"),
+        "SELECT LOWER(a) LIKE LOWER('x%'), CAST(b AS INT) FROM t;"
+    );
     assert_eq!(t(Postgres, Oracle, "SELECT a % 3, true FROM t"), "SELECT MOD(a, 3), 1 FROM t;");
     assert_eq!(t(Postgres, Sqlite, "SELECT DATE '2020-01-01'"), "SELECT '2020-01-01';");
     assert_eq!(t(Sqlite, Oracle, "SELECT a FROM t x WHERE [my col] = 1"), "SELECT a FROM t x WHERE \"my col\" = 1;");
@@ -50,7 +62,10 @@ fn expressions() {
 
 #[test]
 fn dml() {
-    assert_eq!(t(Sqlite, Postgres, "INSERT OR IGNORE INTO t VALUES (1)"), "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING;");
+    assert_eq!(
+        t(Sqlite, Postgres, "INSERT OR IGNORE INTO t VALUES (1)"),
+        "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING;"
+    );
     assert!(err(Sqlite, Postgres, "INSERT OR REPLACE INTO t VALUES (1)").contains("INSERT OR REPLACE"));
     assert!(err(Postgres, Oracle, "INSERT INTO t VALUES (1) RETURNING id").contains("RETURNING"));
     assert!(err(Postgres, Oracle, "INSERT INTO t VALUES (1), (2)").contains("multi-row"));
@@ -60,7 +75,11 @@ fn dml() {
 #[test]
 fn ddl_and_types() {
     assert_eq!(
-        t(Oracle, Postgres, "CREATE TABLE t (id NUMBER(10,2) NOT NULL, n VARCHAR2(100 BYTE), c CLOB, d DATE DEFAULT SYSDATE)"),
+        t(
+            Oracle,
+            Postgres,
+            "CREATE TABLE t (id NUMBER(10,2) NOT NULL, n VARCHAR2(100 BYTE), c CLOB, d DATE DEFAULT SYSDATE)"
+        ),
         "CREATE TABLE t (id NUMERIC(10, 2) NOT NULL, n VARCHAR(100), c TEXT, d DATE DEFAULT SYSDATE);"
     );
     assert_eq!(

@@ -124,7 +124,9 @@ impl Parser<'_> {
             }
             c if c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'+' | b'.') => {
                 let start = self.i;
-                while self.i < self.s.len() && (self.s[self.i].is_ascii_alphanumeric() || matches!(self.s[self.i], b'_' | b'-' | b'+' | b'.')) {
+                while self.i < self.s.len()
+                    && (self.s[self.i].is_ascii_alphanumeric() || matches!(self.s[self.i], b'_' | b'-' | b'+' | b'.'))
+                {
                     self.i += 1;
                 }
                 let name = String::from_utf8_lossy(&self.s[start..self.i]).into_owned();
@@ -139,7 +141,9 @@ impl Parser<'_> {
                         while !self.eat(b'}') {
                             self.ws();
                             let k = self.i;
-                            while self.i < self.s.len() && (self.s[self.i].is_ascii_alphanumeric() || self.s[self.i] == b'_') {
+                            while self.i < self.s.len()
+                                && (self.s[self.i].is_ascii_alphanumeric() || self.s[self.i] == b'_')
+                            {
                                 self.i += 1;
                             }
                             let key = String::from_utf8_lossy(&self.s[k..self.i]).into_owned();
@@ -175,14 +179,27 @@ const ELIDE: &[&str] = &["Value", "UnnamedExpr"];
 const FLOW_WIDTH: usize = 84;
 
 fn scalar(s: &str) -> String {
-    let plain = !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '$' | ':' | '?' | '@' | '*' | '-' | '+'));
-    if plain { s.to_string() } else { format!("{s:?}") }
+    let plain = !s.is_empty()
+        && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '$' | ':' | '?' | '@' | '*' | '-' | '+'));
+    if plain {
+        s.to_string()
+    } else {
+        format!("{s:?}")
+    }
 }
 
 fn ident_text(fields: &[(String, Node)]) -> Option<String> {
-    let value = fields.iter().find(|(k, _)| k == "value").and_then(|(_, n)| if let Node::Str(s) = n { Some(s.clone()) } else { None })?;
+    let value = fields.iter().find(|(k, _)| k == "value").and_then(|(_, n)| {
+        if let Node::Str(s) = n {
+            Some(s.clone())
+        } else {
+            None
+        }
+    })?;
     let quote = fields.iter().find(|(k, _)| k == "quote_style").and_then(|(_, n)| match n {
-        Node::Tuple(name, v) if name == "Some" => v.first().and_then(|n| if let Node::Atom(a) | Node::Str(a) = n { Some(a.clone()) } else { None }),
+        Node::Tuple(name, v) if name == "Some" => {
+            v.first().and_then(|n| if let Node::Atom(a) | Node::Str(a) = n { Some(a.clone()) } else { None })
+        }
         _ => None,
     });
     Some(match quote {
@@ -211,7 +228,8 @@ fn render(n: &Node) -> Option<R> {
                 return None;
             }
             if children.iter().all(|(_, c)| c.children.is_empty()) {
-                let flow = format!("[{}]", children.iter().map(|(_, c)| c.head.as_str()).collect::<Vec<_>>().join(", "));
+                let flow =
+                    format!("[{}]", children.iter().map(|(_, c)| c.head.as_str()).collect::<Vec<_>>().join(", "));
                 if flow.len() <= FLOW_WIDTH {
                     return Some(leaf(flow));
                 }
@@ -233,7 +251,9 @@ fn render(n: &Node) -> Option<R> {
             }
             _ => None,
         },
-        Node::Tuple(name, args) if (name == "Some" || ELIDE.contains(&name.as_str())) && args.len() == 1 => render(&args[0]),
+        Node::Tuple(name, args) if (name == "Some" || ELIDE.contains(&name.as_str())) && args.len() == 1 => {
+            render(&args[0])
+        }
         Node::Tuple(name, args) if args.len() == 1 => {
             let r = render(&args[0])?;
             if name_of(&args[0]) == Some(name) {
@@ -329,7 +349,10 @@ fn yaml_str(s: &str) -> String {
     let mut chars = s.chars();
     let plain = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
         && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.' | '-' | '+' | '*' | '?' | '@'))
-        && !matches!(s.to_ascii_lowercase().as_str(), "y" | "n" | "yes" | "no" | "on" | "off" | "true" | "false" | "null");
+        && !matches!(
+            s.to_ascii_lowercase().as_str(),
+            "y" | "n" | "yes" | "no" | "on" | "off" | "true" | "false" | "null"
+        );
     if plain {
         return s.to_string();
     }
@@ -362,14 +385,24 @@ fn ident_raw(n: &Node) -> Option<(String, bool)> {
     if name != "Ident" {
         return None;
     }
-    let value = fields.iter().find(|(k, _)| k == "value").and_then(|(_, n)| if let Node::Str(s) = n { Some(s.clone()) } else { None })?;
+    let value = fields.iter().find(|(k, _)| k == "value").and_then(|(_, n)| {
+        if let Node::Str(s) = n {
+            Some(s.clone())
+        } else {
+            None
+        }
+    })?;
     let quoted = fields.iter().any(|(k, n)| k == "quote_style" && matches!(n, Node::Tuple(t, _) if t == "Some"));
     Some((value, quoted))
 }
 
 fn ident_y(raw: (String, bool)) -> Y {
     let (value, quoted) = raw;
-    if quoted { Y::Map(vec![("Quoted".into(), Y::Scalar(yaml_str(&value)))]) } else { Y::Scalar(yaml_str(&value)) }
+    if quoted {
+        Y::Map(vec![("Quoted".into(), Y::Scalar(yaml_str(&value)))])
+    } else {
+        Y::Scalar(yaml_str(&value))
+    }
 }
 
 /// `a.b.c` as one scalar, or a sequence when a part is quoted.
@@ -397,7 +430,10 @@ fn to_y(n: &Node) -> Option<Y> {
             let v: Vec<Y> = items.iter().filter_map(to_y).collect();
             (!v.is_empty()).then_some(Y::Seq(v))
         }
-        Node::Struct(name, fields) if name == "Ident" => ident_raw(&Node::Struct(name.clone(), fields.iter().map(|(k, v)| (k.clone(), clone_node(v))).collect())).map(ident_y),
+        Node::Struct(name, fields) if name == "Ident" => {
+            ident_raw(&Node::Struct(name.clone(), fields.iter().map(|(k, v)| (k.clone(), clone_node(v))).collect()))
+                .map(ident_y)
+        }
         Node::Tuple(name, args) if name == "ObjectName" => match args.first() {
             Some(Node::List(parts)) => dotted_y(parts),
             _ => None,
@@ -407,13 +443,14 @@ fn to_y(n: &Node) -> Option<Y> {
             _ => None,
         },
         Node::Tuple(name, args) if name == "Number" => match args.first() {
-            Some(Node::Str(s)) => Some(Y::Map(vec![(
-                name.clone(),
-                Y::Scalar(if plain_number(s) { s.clone() } else { yaml_str(s) }),
-            )])),
+            Some(Node::Str(s)) => {
+                Some(Y::Map(vec![(name.clone(), Y::Scalar(if plain_number(s) { s.clone() } else { yaml_str(s) }))]))
+            }
             _ => None,
         },
-        Node::Tuple(name, args) if (name == "Some" || ELIDE.contains(&name.as_str())) && args.len() == 1 => to_y(&args[0]),
+        Node::Tuple(name, args) if (name == "Some" || ELIDE.contains(&name.as_str())) && args.len() == 1 => {
+            to_y(&args[0])
+        }
         Node::Tuple(name, args) if args.len() == 1 => {
             if name_of(&args[0]) == Some(name) {
                 return to_y(&args[0]);
@@ -448,7 +485,10 @@ fn flow(y: &Y) -> String {
     match y {
         Y::Scalar(s) => s.clone(),
         Y::Seq(v) => format!("[{}]", v.iter().map(flow).collect::<Vec<_>>().join(", ")),
-        Y::Map(m) => format!("{{{}}}", m.iter().map(|(k, v)| format!("{}: {}", yaml_str(k), flow(v))).collect::<Vec<_>>().join(", ")),
+        Y::Map(m) => format!(
+            "{{{}}}",
+            m.iter().map(|(k, v)| format!("{}: {}", yaml_str(k), flow(v))).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 

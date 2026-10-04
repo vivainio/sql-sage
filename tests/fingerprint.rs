@@ -55,7 +55,10 @@ fn dml_ddl() {
         fp(Postgres, "INSERT INTO a SELECT * FROM b ON CONFLICT (id) DO NOTHING RETURNING id"),
         "insert | a:insert b:read | upsert returning | -"
     );
-    assert_eq!(fp(Sqlite, "DELETE FROM t WHERE id IN (SELECT id FROM u)"), "delete | t:delete u:read | filter subquery | -");
+    assert_eq!(
+        fp(Sqlite, "DELETE FROM t WHERE id IN (SELECT id FROM u)"),
+        "delete | t:delete u:read | filter subquery | -"
+    );
     assert_eq!(
         fp(Postgres, "CREATE TABLE t (id int, c int REFERENCES customers(id), FOREIGN KEY (id) REFERENCES t(id))"),
         "create_table | customers:read t:create | foreign_key | -"

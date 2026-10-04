@@ -4,10 +4,50 @@ use crate::error::{Location, ParseError, Result};
 use crate::lexer::{Lexer, Token, TokenWithLocation, Word};
 
 const RESERVED: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "BY", "LIMIT", "OFFSET", "FETCH", "UNION",
-    "INTERSECT", "EXCEPT", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "NATURAL", "ON", "USING",
-    "SET", "RETURNING", "VALUES", "WINDOW", "FOR", "INTO", "AS", "AND", "OR", "NOT", "IS", "IN", "LIKE",
-    "BETWEEN", "WHEN", "THEN", "ELSE", "END", "CASE", "NULL", "WITH", "DO",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "GROUP",
+    "HAVING",
+    "ORDER",
+    "BY",
+    "LIMIT",
+    "OFFSET",
+    "FETCH",
+    "UNION",
+    "INTERSECT",
+    "EXCEPT",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "FULL",
+    "CROSS",
+    "NATURAL",
+    "ON",
+    "USING",
+    "SET",
+    "RETURNING",
+    "VALUES",
+    "WINDOW",
+    "FOR",
+    "INTO",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IS",
+    "IN",
+    "LIKE",
+    "BETWEEN",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "CASE",
+    "NULL",
+    "WITH",
+    "DO",
 ];
 
 pub struct Parser<'a> {
@@ -188,7 +228,9 @@ impl<'a> Parser<'a> {
         self.expect_keyword("INTO")?;
         let table = self.parse_object_name()?;
         let mut columns = vec![];
-        if *self.peek_token() == Token::LParen && !(self.peek_nth_keyword(1, "SELECT") || self.peek_nth_keyword(1, "WITH")) {
+        if *self.peek_token() == Token::LParen
+            && !(self.peek_nth_keyword(1, "SELECT") || self.peek_nth_keyword(1, "WITH"))
+        {
             self.next_token();
             columns = self.parse_comma_separated(Self::parse_ident)?;
             self.expect_token(&Token::RParen)?;
@@ -310,9 +352,8 @@ impl<'a> Parser<'a> {
         let mut columns = vec![];
         let mut constraints = vec![];
         loop {
-            let is_constraint = ["CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN", "CHECK"]
-                .iter()
-                .any(|k| self.peek_keyword(k));
+            let is_constraint =
+                ["CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN", "CHECK"].iter().any(|k| self.peek_keyword(k));
             if is_constraint {
                 constraints.push(self.parse_table_constraint()?);
             } else {
@@ -376,7 +417,11 @@ impl<'a> Parser<'a> {
             } else {
                 return self.expected("referential action");
             };
-            if is_delete { on_delete = Some(action.to_string()) } else { on_update = Some(action.to_string()) }
+            if is_delete {
+                on_delete = Some(action.to_string())
+            } else {
+                on_update = Some(action.to_string())
+            }
         }
         Ok(ForeignKeyRef { table, columns, on_delete, on_update })
     }
@@ -387,8 +432,17 @@ impl<'a> Parser<'a> {
             && match self.peek_token() {
                 Token::Comma | Token::RParen => true,
                 Token::Word(w) => [
-                    "CONSTRAINT", "NOT", "NULL", "DEFAULT", "PRIMARY", "UNIQUE", "REFERENCES", "CHECK",
-                    "COLLATE", "GENERATED", "AUTOINCREMENT",
+                    "CONSTRAINT",
+                    "NOT",
+                    "NULL",
+                    "DEFAULT",
+                    "PRIMARY",
+                    "UNIQUE",
+                    "REFERENCES",
+                    "CHECK",
+                    "COLLATE",
+                    "GENERATED",
+                    "AUTOINCREMENT",
                 ]
                 .iter()
                 .any(|k| w.is_keyword(k)),
@@ -471,14 +525,13 @@ impl<'a> Parser<'a> {
             } else if self.parse_keyword("OFFSET") {
                 offset = Some(self.parse_expr()?);
                 self.parse_one_of_keywords(&["ROW", "ROWS"]);
-            } else if self.peek_keyword("FETCH") && (self.peek_nth_keyword(1, "FIRST") || self.peek_nth_keyword(1, "NEXT")) {
+            } else if self.peek_keyword("FETCH")
+                && (self.peek_nth_keyword(1, "FIRST") || self.peek_nth_keyword(1, "NEXT"))
+            {
                 self.next_token();
                 self.next_token();
-                let quantity = if self.peek_keyword("ROW") || self.peek_keyword("ROWS") {
-                    None
-                } else {
-                    Some(self.parse_expr()?)
-                };
+                let quantity =
+                    if self.peek_keyword("ROW") || self.peek_keyword("ROWS") { None } else { Some(self.parse_expr()?) };
                 let percent = self.parse_keyword("PERCENT");
                 if self.parse_one_of_keywords(&["ROW", "ROWS"]).is_none() {
                     return self.expected("ROW or ROWS");
@@ -574,17 +627,11 @@ impl<'a> Parser<'a> {
             None
         };
         let projection = self.parse_comma_separated(Self::parse_select_item)?;
-        let from = if self.parse_keyword("FROM") {
-            self.parse_comma_separated(Self::parse_table_and_joins)?
-        } else {
-            vec![]
-        };
+        let from =
+            if self.parse_keyword("FROM") { self.parse_comma_separated(Self::parse_table_and_joins)? } else { vec![] };
         let selection = if self.parse_keyword("WHERE") { Some(self.parse_expr()?) } else { None };
-        let group_by = if self.parse_keywords(&["GROUP", "BY"]) {
-            self.parse_comma_separated(Self::parse_expr)?
-        } else {
-            vec![]
-        };
+        let group_by =
+            if self.parse_keywords(&["GROUP", "BY"]) { self.parse_comma_separated(Self::parse_expr)? } else { vec![] };
         let having = if self.parse_keyword("HAVING") { Some(self.parse_expr()?) } else { None };
         Ok(Select { distinct, projection, from, selection, group_by, having })
     }
@@ -901,11 +948,8 @@ impl<'a> Parser<'a> {
                             _ => LikeKind::Glob,
                         };
                         let pattern = Box::new(self.parse_subexpr(20)?);
-                        let escape = if self.parse_keyword("ESCAPE") {
-                            Some(Box::new(self.parse_subexpr(20)?))
-                        } else {
-                            None
-                        };
+                        let escape =
+                            if self.parse_keyword("ESCAPE") { Some(Box::new(self.parse_subexpr(20)?)) } else { None };
                         Ok(Expr::Like { expr: left, negated, kind, pattern, escape })
                     }
                     _ => self.expected("IN, BETWEEN or LIKE"),
@@ -978,7 +1022,9 @@ impl<'a> Parser<'a> {
                         other => Expr::UnaryOp { op: UnaryOperator::Not, expr: Box::new(other) },
                     });
                 }
-                "DATE" | "TIMESTAMP" | "TIME" | "INTERVAL" if matches!(self.peek_token(), Token::SingleQuotedString(_)) => {
+                "DATE" | "TIMESTAMP" | "TIME" | "INTERVAL"
+                    if matches!(self.peek_token(), Token::SingleQuotedString(_)) =>
+                {
                     let Token::SingleQuotedString(value) = self.next_token() else { unreachable!() };
                     let data_type = DataType { name: upper, args: vec![], suffix: None, array_dims: 0 };
                     return Ok(Expr::TypedString { data_type, value });
@@ -997,11 +1043,7 @@ impl<'a> Parser<'a> {
         if *self.peek_token() == Token::LParen {
             return self.parse_function(ObjectName(parts));
         }
-        Ok(if parts.len() == 1 {
-            Expr::Identifier(parts.pop().unwrap())
-        } else {
-            Expr::CompoundIdentifier(parts)
-        })
+        Ok(if parts.len() == 1 { Expr::Identifier(parts.pop().unwrap()) } else { Expr::CompoundIdentifier(parts) })
     }
 
     fn parse_case(&mut self) -> Result<Expr> {

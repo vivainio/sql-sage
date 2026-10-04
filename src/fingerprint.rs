@@ -172,7 +172,11 @@ impl Fingerprint {
                 }
             })
             .collect();
-        if parts.is_empty() { "-".into() } else { parts.join(",") }
+        if parts.is_empty() {
+            "-".into()
+        } else {
+            parts.join(",")
+        }
     }
 
     /// Tables the statement modifies or defines.
@@ -224,7 +228,14 @@ impl Statement {
     pub fn fingerprint(&self) -> Fingerprint {
         let mut c = Collector::default();
         let kind = c.statement(self);
-        Fingerprint { kind, tables: c.tables, operations: c.ops, functions: c.functions, compat: vec![], compat_maybe: vec![] }
+        Fingerprint {
+            kind,
+            tables: c.tables,
+            operations: c.ops,
+            functions: c.functions,
+            compat: vec![],
+            compat_maybe: vec![],
+        }
     }
 
     /// Like [`Self::fingerprint`], plus the compatibility code for a statement
@@ -244,8 +255,25 @@ impl Statement {
 }
 
 const AGGREGATES: &[&str] = &[
-    "count", "sum", "avg", "min", "max", "total", "string_agg", "listagg", "group_concat", "array_agg", "json_agg",
-    "jsonb_agg", "json_arrayagg", "stddev", "variance", "median", "bool_and", "bool_or", "every",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "total",
+    "string_agg",
+    "listagg",
+    "group_concat",
+    "array_agg",
+    "json_agg",
+    "jsonb_agg",
+    "json_arrayagg",
+    "stddev",
+    "variance",
+    "median",
+    "bool_and",
+    "bool_or",
+    "every",
 ];
 
 #[derive(Default)]
@@ -260,7 +288,9 @@ struct Collector {
 fn normalize(n: &ObjectName) -> String {
     n.0.iter()
         .map(|i| match i.quote_style {
-            Some(_) if i.value != i.value.to_lowercase() || !i.value.chars().all(|c| c.is_alphanumeric() || c == '_') => {
+            Some(_)
+                if i.value != i.value.to_lowercase() || !i.value.chars().all(|c| c.is_alphanumeric() || c == '_') =>
+            {
                 format!("\"{}\"", i.value)
             }
             _ => i.value.to_lowercase(),
@@ -505,14 +535,20 @@ impl Collector {
 
     fn expr(&mut self, e: &Expr) {
         match e {
-            Expr::Identifier(_) | Expr::CompoundIdentifier(_) | Expr::Value(_) | Expr::Placeholder(_) | Expr::TypedString { .. } => {}
+            Expr::Identifier(_)
+            | Expr::CompoundIdentifier(_)
+            | Expr::Value(_)
+            | Expr::Placeholder(_)
+            | Expr::TypedString { .. } => {}
             Expr::BinaryOp { left, right, .. } => {
                 self.expr(left);
                 self.expr(right);
             }
-            Expr::UnaryOp { expr, .. } | Expr::Nested(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Cast { expr, .. } => {
-                self.expr(expr)
-            }
+            Expr::UnaryOp { expr, .. }
+            | Expr::Nested(expr)
+            | Expr::IsNull(expr)
+            | Expr::IsNotNull(expr)
+            | Expr::Cast { expr, .. } => self.expr(expr),
             Expr::Tuple(t) => t.iter().for_each(|e| self.expr(e)),
             Expr::Between { expr, low, high, .. } => {
                 self.expr(expr);

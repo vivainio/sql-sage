@@ -21,8 +21,8 @@ pub mod error;
 pub mod fingerprint;
 pub mod functions;
 pub mod lexer;
-pub mod parser;
 pub mod outline;
+pub mod parser;
 
 pub use emit::EmitError;
 pub use error::{Location, ParseError};

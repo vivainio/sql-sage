@@ -9,7 +9,10 @@ fn catalogs_are_populated_from_the_real_sources() {
     assert!(lines(include_str!("../data/functions/oracle.txt")) > 300, "oracle catalog looks truncated");
     assert!(lines(include_str!("../data/functions/sqlite.txt")) > 100, "sqlite catalog looks truncated");
     for (kind, names) in [
-        (Postgres, ["now", "string_agg", "date_trunc", "coalesce", "count", "row_number", "generate_series", "to_char"]),
+        (
+            Postgres,
+            ["now", "string_agg", "date_trunc", "coalesce", "count", "row_number", "generate_series", "to_char"],
+        ),
         (Oracle, ["nvl", "decode", "listagg", "sysdate", "add_months", "regexp_like", "to_char", "row_number"]),
         (Sqlite, ["ifnull", "group_concat", "strftime", "json_extract", "coalesce", "count", "row_number", "random"]),
     ] {

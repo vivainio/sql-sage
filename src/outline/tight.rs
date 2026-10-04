@@ -26,7 +26,8 @@ impl Outline {
             Statement::Query(q) => self.tight_query(q),
             Statement::Insert(i) => self.tight_insert(i),
             Statement::Update(u) => {
-                let mut l = vec![format!("update {}", self.tight_table_factor(&u.table)), self.assignments(&u.assignments)];
+                let mut l =
+                    vec![format!("update {}", self.tight_table_factor(&u.table)), self.assignments(&u.assignments)];
                 l.extend(self.tight_from(&u.from));
                 if let Some(w) = &u.selection {
                     l.push(self.tight_filter("?", w));
@@ -110,7 +111,8 @@ impl Outline {
             .collect();
         let w0 = rows.iter().map(|r| r.0.len()).max().unwrap_or(0);
         let w1 = rows.iter().map(|r| r.1.len()).max().unwrap_or(0);
-        let mut body: Vec<String> = rows.iter().map(|(n, t, o)| format!("{n:<w0$}  {t:<w1$}  {o}").trim_end().to_string()).collect();
+        let mut body: Vec<String> =
+            rows.iter().map(|(n, t, o)| format!("{n:<w0$}  {t:<w1$}  {o}").trim_end().to_string()).collect();
         body.extend(c.constraints.iter().map(|con| self.tight_table_constraint(con)));
         format!("{head}\n{}\n}}", indent(&body.join("\n"), 2))
     }
@@ -168,7 +170,12 @@ impl Outline {
         if let Some(w) = &q.with {
             for cte in &w.ctes {
                 let cols = if cte.columns.is_empty() { String::new() } else { format!("({})", self.ids(&cte.columns)) };
-                lines.push(format!("let {}{}{cols} = {}", if w.recursive { "rec " } else { "" }, self.id(&cte.name), Self::block(&self.tight_query(&cte.query))));
+                lines.push(format!(
+                    "let {}{}{cols} = {}",
+                    if w.recursive { "rec " } else { "" },
+                    self.id(&cte.name),
+                    Self::block(&self.tight_query(&cte.query))
+                ));
             }
         }
         lines.push(self.tight_set_expr(&q.body));
@@ -207,7 +214,11 @@ impl Outline {
                     SetQuantifier::Distinct => " distinct",
                     SetQuantifier::None => "",
                 };
-                format!("{}\n{op}{q}\n{}", Self::block(&self.tight_set_expr(left)), Self::block(&self.tight_set_expr(right)))
+                format!(
+                    "{}\n{op}{q}\n{}",
+                    Self::block(&self.tight_set_expr(left)),
+                    Self::block(&self.tight_set_expr(right))
+                )
             }
         }
     }
@@ -251,7 +262,9 @@ impl Outline {
         };
         match t {
             TableFactor::Table { name, alias: a } => format!("{}{}", self.name(name), alias(a)),
-            TableFactor::Derived { subquery, alias: a } => format!("{}{}", Self::block(&self.tight_query(subquery)), alias(a)),
+            TableFactor::Derived { subquery, alias: a } => {
+                format!("{}{}", Self::block(&self.tight_query(subquery)), alias(a))
+            }
             TableFactor::Nested(t) => {
                 let mut parts = vec![self.tight_table_factor(&t.relation)];
                 parts.extend(t.joins.iter().map(|j| self.tight_join(j)));

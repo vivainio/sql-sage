@@ -326,8 +326,7 @@ impl<'a> Lexer<'a> {
         }
         if matches!(self.peek(), Some('e' | 'E')) {
             let n1 = self.peek_at(1);
-            let digit_after_sign = matches!(n1, Some('+' | '-'))
-                && self.peek_at(2).is_some_and(|c| c.is_ascii_digit());
+            let digit_after_sign = matches!(n1, Some('+' | '-')) && self.peek_at(2).is_some_and(|c| c.is_ascii_digit());
             if n1.is_some_and(|c| c.is_ascii_digit()) || digit_after_sign {
                 s.push(self.bump().unwrap());
                 if matches!(self.peek(), Some('+' | '-')) {

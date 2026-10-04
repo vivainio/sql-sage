@@ -21,7 +21,10 @@ fn postgres_features() {
         norm(Postgres, "SELECT DISTINCT ON (a) a, b FROM t ORDER BY a, b DESC NULLS LAST"),
         "SELECT DISTINCT ON (a) a, b FROM t ORDER BY a, b DESC NULLS LAST"
     );
-    assert_eq!(norm(Postgres, "SELECT $$it's$$, E'a\\nb', data->>'k' FROM t"), "SELECT 'it''s', 'a\nb', data ->> 'k' FROM t");
+    assert_eq!(
+        norm(Postgres, "SELECT $$it's$$, E'a\\nb', data->>'k' FROM t"),
+        "SELECT 'it''s', 'a\nb', data ->> 'k' FROM t"
+    );
     assert_eq!(
         norm(Postgres, "INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = excluded.a RETURNING id"),
         "INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = excluded.a RETURNING id"
@@ -41,10 +44,7 @@ fn sqlite_features() {
         norm(Sqlite, "SELECT [a b], `c` FROM t WHERE x = ?1 AND y GLOB :p OR z = @q"),
         "SELECT [a b], `c` FROM t WHERE x = ?1 AND y GLOB :p OR z = @q"
     );
-    assert_eq!(
-        norm(Sqlite, "INSERT OR REPLACE INTO t VALUES (1, 'a')"),
-        "INSERT OR REPLACE INTO t VALUES (1, 'a')"
-    );
+    assert_eq!(norm(Sqlite, "INSERT OR REPLACE INTO t VALUES (1, 'a')"), "INSERT OR REPLACE INTO t VALUES (1, 'a')");
     assert_eq!(
         norm(Sqlite, "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, blob_col, name TEXT NOT NULL DEFAULT 'x')"),
         "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, blob_col, name TEXT NOT NULL DEFAULT 'x')"

@@ -1,10 +1,9 @@
-use crate::ast::*;
 use super::{flatten_and, hang, indent, list_block, neg, Outline};
+use crate::ast::*;
 
 pub(super) const WIDTH: usize = 72;
 
 impl Outline {
-
     pub(super) fn id(&self, i: &Ident) -> String {
         self.e.ident(i)
     }
@@ -97,7 +96,8 @@ impl Outline {
     }
 
     pub(super) fn assignments(&self, a: &[Assignment]) -> String {
-        let items: Vec<String> = a.iter().map(|x| format!("{} = {}", self.name(&x.column), self.expr(&x.value))).collect();
+        let items: Vec<String> =
+            a.iter().map(|x| format!("{} = {}", self.name(&x.column), self.expr(&x.value))).collect();
         match items.as_slice() {
             [one] if !one.contains('\n') => format!("set {one}"),
             _ => format!("set\n{}", indent(&items.join("\n"), 2)),
@@ -245,8 +245,13 @@ impl Outline {
         let mut lines = vec![];
         if let Some(w) = &q.with {
             for cte in &w.ctes {
-                let cols = if cte.columns.is_empty() { String::new() } else { format!(" ({})", self.ids(&cte.columns)) };
-                lines.push(format!("with {}{}{cols} as", if w.recursive { "recursive " } else { "" }, self.id(&cte.name)));
+                let cols =
+                    if cte.columns.is_empty() { String::new() } else { format!(" ({})", self.ids(&cte.columns)) };
+                lines.push(format!(
+                    "with {}{}{cols} as",
+                    if w.recursive { "recursive " } else { "" },
+                    self.id(&cte.name)
+                ));
                 lines.push(indent(&self.query(&cte.query), 2));
             }
         }
@@ -459,7 +464,13 @@ impl Outline {
             Expr::IsNull(e) => format!("{} is null", self.expr(e)),
             Expr::IsNotNull(e) => format!("{} is not null", self.expr(e)),
             Expr::Between { expr, negated, low, high } if self.tight => {
-                format!("{} {}in {}..{}", self.expr(expr), if *negated { "!" } else { "" }, self.expr(low), self.expr(high))
+                format!(
+                    "{} {}in {}..{}",
+                    self.expr(expr),
+                    if *negated { "!" } else { "" },
+                    self.expr(low),
+                    self.expr(high)
+                )
             }
             Expr::Between { expr, negated, low, high } => {
                 format!("{} {}between {} and {}", self.expr(expr), neg(*negated), self.expr(low), self.expr(high))
@@ -471,7 +482,15 @@ impl Outline {
                 format!("{} {}in ({})", self.expr(expr), neg(*negated), self.exprs(list))
             }
             Expr::InSubquery { expr, subquery, negated } => {
-                let not = if self.tight { if *negated { "!" } else { "" } } else { neg(*negated) };
+                let not = if self.tight {
+                    if *negated {
+                        "!"
+                    } else {
+                        ""
+                    }
+                } else {
+                    neg(*negated)
+                };
                 format!("{} {not}in {}", self.expr(expr), self.sub(subquery))
             }
             Expr::Like { expr, negated, kind, pattern, escape } => {
@@ -487,15 +506,27 @@ impl Outline {
                 s
             }
             Expr::Exists { subquery, negated } => {
-                let not = if self.tight { if *negated { "!" } else { "" } } else { neg(*negated) };
+                let not = if self.tight {
+                    if *negated {
+                        "!"
+                    } else {
+                        ""
+                    }
+                } else {
+                    neg(*negated)
+                };
                 format!("{not}exists {}", self.sub(subquery))
             }
             Expr::Subquery(q) => self.sub(q),
             Expr::Cast { expr, data_type } => {
                 let simple = matches!(
                     **expr,
-                    Expr::Identifier(_) | Expr::CompoundIdentifier(_) | Expr::Value(_) | Expr::Placeholder(_)
-                        | Expr::Function(_) | Expr::Nested(_)
+                    Expr::Identifier(_)
+                        | Expr::CompoundIdentifier(_)
+                        | Expr::Value(_)
+                        | Expr::Placeholder(_)
+                        | Expr::Function(_)
+                        | Expr::Nested(_)
                 );
                 if simple {
                     format!("{}::{}", self.expr(expr), self.ty(data_type))

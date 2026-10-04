@@ -59,12 +59,7 @@ pub struct Fetch {
 pub enum SetExpr {
     Select(Box<Select>),
     Query(Box<Query>),
-    SetOperation {
-        op: SetOperator,
-        quantifier: SetQuantifier,
-        left: Box<SetExpr>,
-        right: Box<SetExpr>,
-    },
+    SetOperation { op: SetOperator, quantifier: SetQuantifier, left: Box<SetExpr>, right: Box<SetExpr> },
     Values(Values),
 }
 
@@ -180,21 +175,11 @@ pub enum Expr {
     Between { expr: Box<Expr>, negated: bool, low: Box<Expr>, high: Box<Expr> },
     InList { expr: Box<Expr>, list: Vec<Expr>, negated: bool },
     InSubquery { expr: Box<Expr>, subquery: Box<Query>, negated: bool },
-    Like {
-        expr: Box<Expr>,
-        negated: bool,
-        kind: LikeKind,
-        pattern: Box<Expr>,
-        escape: Option<Box<Expr>>,
-    },
+    Like { expr: Box<Expr>, negated: bool, kind: LikeKind, pattern: Box<Expr>, escape: Option<Box<Expr>> },
     Exists { subquery: Box<Query>, negated: bool },
     Subquery(Box<Query>),
     Cast { expr: Box<Expr>, data_type: DataType },
-    Case {
-        operand: Option<Box<Expr>>,
-        branches: Vec<CaseBranch>,
-        else_result: Option<Box<Expr>>,
-    },
+    Case { operand: Option<Box<Expr>>, branches: Vec<CaseBranch>, else_result: Option<Box<Expr>> },
     Function(Function),
 }
 

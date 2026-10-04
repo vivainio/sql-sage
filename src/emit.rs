@@ -121,7 +121,12 @@ impl<'a> Emitter<'a> {
         self.need_at(f, what, || None)
     }
 
-    fn need_at(&self, f: fn(&dyn Dialect) -> bool, what: &str, at: impl FnOnce() -> Option<String>) -> Result<(), EmitError> {
+    fn need_at(
+        &self,
+        f: fn(&dyn Dialect) -> bool,
+        what: &str,
+        at: impl FnOnce() -> Option<String>,
+    ) -> Result<(), EmitError> {
         match self.target {
             Some(d) if !f(d) => {
                 let at = if self.collect { at() } else { None };
@@ -143,10 +148,7 @@ impl<'a> Emitter<'a> {
             if s.identifier_fold() != t.identifier_fold() && t.identifier_fold().fold(&i.value) != i.value {
                 self.note(
                     Severity::Warning,
-                    format!(
-                        "quoted identifier is case-sensitive, but unquoted names fold differently in {}",
-                        t.name()
-                    ),
+                    format!("quoted identifier is case-sensitive, but unquoted names fold differently in {}", t.name()),
                     Some(format!("\"{}\"", i.value)),
                 );
             }
@@ -282,7 +284,8 @@ impl<'a> Emitter<'a> {
     }
 
     fn update(&self, u: &Update) -> R {
-        let mut out = format!("UPDATE {} SET {}", self.table_factor(&u.table)?, self.list(&u.assignments, Self::assignment)?);
+        let mut out =
+            format!("UPDATE {} SET {}", self.table_factor(&u.table)?, self.list(&u.assignments, Self::assignment)?);
         if !u.from.is_empty() {
             self.need(|d| d.supports_update_from(), "UPDATE ... FROM")?;
             out.push_str(&format!(" FROM {}", self.list(&u.from, Self::table_with_joins)?));
@@ -678,7 +681,9 @@ impl<'a> Emitter<'a> {
     fn table_factor(&self, t: &TableFactor) -> R {
         Ok(match t {
             TableFactor::Table { name, alias } => format!("{}{}", self.object_name(name), self.table_alias(alias)),
-            TableFactor::Derived { subquery, alias } => format!("({}){}", self.query(subquery)?, self.table_alias(alias)),
+            TableFactor::Derived { subquery, alias } => {
+                format!("({}){}", self.query(subquery)?, self.table_alias(alias))
+            }
             TableFactor::Nested(t) => format!("({})", self.table_with_joins(t)?),
         })
     }
@@ -799,7 +804,11 @@ impl<'a> Emitter<'a> {
                     if let Some(hint) = d.function_hint(&i.value.to_ascii_uppercase()) {
                         self.note(
                             Severity::Incompatible,
-                            format!("{} does not exist in {} (if it is not a column): {hint}", i.value.to_ascii_uppercase(), d.name()),
+                            format!(
+                                "{} does not exist in {} (if it is not a column): {hint}",
+                                i.value.to_ascii_uppercase(),
+                                d.name()
+                            ),
                             Some(i.value.clone()),
                         );
                     }
@@ -838,7 +847,11 @@ impl<'a> Emitter<'a> {
                 let (l, p) = (self.expr(expr)?, self.expr(pattern)?);
                 let mut s = match kind {
                     LikeKind::ILike if !self.has(|d| d.supports_ilike()) => {
-                        self.note(Severity::Rewritten, "ILIKE -> LOWER(a) LIKE LOWER(b)", Some(format!("{l} ILIKE {p}")));
+                        self.note(
+                            Severity::Rewritten,
+                            "ILIKE -> LOWER(a) LIKE LOWER(b)",
+                            Some(format!("{l} ILIKE {p}")),
+                        );
                         format!("LOWER({l}) {}LIKE LOWER({p})", neg(*negated))
                     }
                     LikeKind::Glob => {
@@ -923,7 +936,11 @@ impl<'a> Emitter<'a> {
             BinaryOperator::Or => "OR",
             BinaryOperator::JsonGet | BinaryOperator::JsonGetText => {
                 self.need_at(|d| d.supports_json_arrows(), "JSON operators (->, ->>)", || Some(format!("{l} -> {r}")))?;
-                if op == BinaryOperator::JsonGet { "->" } else { "->>" }
+                if op == BinaryOperator::JsonGet {
+                    "->"
+                } else {
+                    "->>"
+                }
             }
         };
         Ok(format!("{l} {sym} {r}"))
@@ -943,7 +960,11 @@ impl<'a> Emitter<'a> {
         let upper = lower.to_uppercase();
         let at = Some(rendered.to_string());
         if let Some(why) = t.function_collision(&upper, f.args.len()) {
-            self.note(Severity::Incompatible, format!("function {upper} exists in {} but means something else: {why}", t.name()), at);
+            self.note(
+                Severity::Incompatible,
+                format!("function {upper} exists in {} but means something else: {why}", t.name()),
+                at,
+            );
         } else if t.has_function(&lower) {
         } else if let Some(hint) = t.function_hint(&upper) {
             self.note(Severity::Incompatible, format!("function {upper} does not exist in {}: {hint}", t.name()), at);
@@ -997,7 +1018,11 @@ fn quote_str(s: &str) -> String {
 }
 
 fn neg(negated: bool) -> &'static str {
-    if negated { "NOT " } else { "" }
+    if negated {
+        "NOT "
+    } else {
+        ""
+    }
 }
 
 // ------------------------------------------------------------ public API

@@ -100,7 +100,10 @@ fn tight_statements() {
         o(Sqlite, Tight, "INSERT INTO t (a, b) VALUES (1, 2) ON CONFLICT (a) DO UPDATE SET b = 1, c = 2"),
         "insert t(a, b)\nvalues\n  (1, 2)\non conflict (a) update\n  b = 1\n  c = 2"
     );
-    assert_eq!(o(Sqlite, Tight, "UPDATE t SET a = 1, b = 2 WHERE id = ?1"), "update t\nset\n  a = 1\n  b = 2\n? id = ?1");
+    assert_eq!(
+        o(Sqlite, Tight, "UPDATE t SET a = 1, b = 2 WHERE id = ?1"),
+        "update t\nset\n  a = 1\n  b = 2\n? id = ?1"
+    );
     assert_eq!(o(Sqlite, Tight, "DELETE FROM t WHERE id = 1"), "delete t\n? id = 1");
     assert_eq!(
         o(Postgres, Tight, "CREATE TABLE t (id int PRIMARY KEY, n text NOT NULL DEFAULT 'x', PRIMARY KEY (id), FOREIGN KEY (n) REFERENCES u(k) ON DELETE CASCADE)"),

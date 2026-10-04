@@ -128,13 +128,37 @@ writes to a table.
 
 The bracketed code lists the dialects the statement runs on **without manual changes**:
 `ora`, `pg`, `lite` (for example `[ora,pg,lite]` for portable SQL, `[pg,lite]` for
-`RETURNING`, `[ora]` for `NVL`, `-` when none fit). It uses the same analysis as `--compat`
-against every dialect, the source one included. Warnings and automatic rewrites do not
-reduce compatibility. The code is not part of the id, so the id depends only on query shape.
+`RETURNING`, `[ora]` for `NVL`, `-` when none fit). A `?` means nothing is known to be wrong
+but the statement calls functions that cannot be verified there (`[ora?,pg,lite?]` for a
+user-defined function written for Postgres). It uses the same analysis as `--compat` against
+every dialect, the source one included. Warnings and automatic rewrites do not reduce
+compatibility. The code is not part of the id, so the id depends only on query shape.
 
 From Rust: `fingerprint_sql(dialect, sql)` or `stmt.fingerprint_for(dialect)` (use
 `stmt.fingerprint()` for shape only), with `reads()`, `writes()`, `is_read_only()`, `id()`
 and `compat_code()` on the result.
+
+## Function catalogs
+
+Function availability is judged against catalogs of the built-in functions of the latest
+release of each engine, generated from the engines' own sources by
+`tools/gen_function_catalogs.py` into `data/functions/`:
+
+| engine | source | names |
+|---|---|---|
+| PostgreSQL 18 | `pg_proc.dat` + `system_functions.sql` (REL_18_STABLE) | 2793 |
+| SQLite 3.53.4 | `PRAGMA function_list` of the official amalgamation, built with the CLI options | 137 |
+| Oracle AI Database 26ai | function pages of the SQL Language Reference (plus conditions and byte/char variants) | 342 |
+
+For each call and target dialect: in the target's catalog means fine; missing from the target
+but present in another dialect is *incompatible* (with a replacement hint such as `NVL` ->
+`COALESCE` where known); in no catalog is *unverified* (probably user-defined or from an
+extension) and is trusted for the dialect the SQL was written in. A few names exist
+everywhere but mean different things (`DECODE`, `CONCAT` with 3+ arguments, `MAX(a, b)`);
+those are flagged as collisions. Schema- or package-qualified calls are ignored.
+
+Re-run the script to move to newer releases:
+`tools/gen_function_catalogs.py --pg 19 --sqlite <path> --oracle 26` (needs network, `gcc`, `unzip`).
 
 ## Scope and limits
 
@@ -144,8 +168,12 @@ and `compat_code()` on the result.
 * Not covered: PL/SQL and procedural code, `CONNECT BY`, Oracle `(+)` joins, window frames,
   `IS DISTINCT FROM`, `CREATE VIEW`, `ALTER`.
 * The parser is lenient in places (for example `AUTOINCREMENT` is accepted in every dialect).
-* Function and pseudo-column hints in the compatibility report are short curated lists
-  (`Dialect::function_hint`); extend them as needed. `transpile` does not translate functions.
+* Function catalogs contain names only (no argument types or per-version availability) and
+  cover core built-ins; extension functions such as `pg_trgm`'s are *unverified*. The Postgres
+  catalog is every callable `pg_proc` function, including internal ones. The Oracle catalog is
+  scraped from the docs, so a function missing from those pages would be reported as missing.
+  Replacement hints (`Dialect::function_hint`) and collisions are short curated lists.
+  `transpile` does not translate functions.
 * The AST has no source spans, so findings point at a statement and the expression text.
 
 ## Development

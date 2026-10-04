@@ -929,20 +929,54 @@ impl<'a> Emitter<'a> {
         Ok(format!("{l} {sym} {r}"))
     }
 
+    /// Is this function call available on the target, judged against the
+    /// catalogs of built-in functions (see [`crate::functions`])?
+    fn check_function(&self, s: &dyn Dialect, t: &dyn Dialect, f: &Function, rendered: &str) {
+        // package / schema-qualified calls (other than system schemas) are user or
+        // package objects we know nothing about
+        let name = match f.name.0.as_slice() {
+            [n] => n,
+            [schema, n] if matches!(schema.value.to_lowercase().as_str(), "pg_catalog" | "sys" | "main") => n,
+            _ => return,
+        };
+        let lower = name.value.to_lowercase();
+        let upper = lower.to_uppercase();
+        let at = Some(rendered.to_string());
+        if let Some(why) = t.function_collision(&upper, f.args.len()) {
+            self.note(Severity::Incompatible, format!("function {upper} exists in {} but means something else: {why}", t.name()), at);
+        } else if t.has_function(&lower) {
+        } else if let Some(hint) = t.function_hint(&upper) {
+            self.note(Severity::Incompatible, format!("function {upper} does not exist in {}: {hint}", t.name()), at);
+        } else {
+            let others = crate::functions::dialects_with(&lower);
+            if !others.is_empty() {
+                self.note(
+                    Severity::Incompatible,
+                    format!("function {upper} does not exist in {} (available in {})", t.name(), others.join("/")),
+                    at,
+                );
+            } else if t.name() != s.name() {
+                // trusted in the dialect it was written for; unverifiable elsewhere
+                self.note(
+                    Severity::Unverified,
+                    format!(
+                        "function {upper} is not a built-in of any supported dialect; assumed user-defined, check that it exists in {}",
+                        t.name()
+                    ),
+                    at,
+                );
+            }
+        }
+    }
+
     fn function(&self, f: &Function) -> R {
         let args = self.list(&f.args, |s, a| match a {
             FunctionArg::Wildcard => Ok("*".to_string()),
             FunctionArg::Expr(e) => s.expr(e),
         })?;
         let mut out = format!("{}({}{args})", self.object_name(&f.name), if f.distinct { "DISTINCT " } else { "" });
-        if let (true, Some(d), Some(last)) = (self.collect, self.target, f.name.0.last()) {
-            if let Some(hint) = d.function_hint(&last.value.to_ascii_uppercase()) {
-                self.note(
-                    Severity::Incompatible,
-                    format!("function {} does not exist in {}: {hint}", last.value.to_ascii_uppercase(), d.name()),
-                    Some(out.clone()),
-                );
-            }
+        if let (true, Some(s), Some(t)) = (self.collect, self.source, self.target) {
+            self.check_function(s, t, f, &out);
         }
         if let Some(w) = &f.over {
             let mut parts = vec![];

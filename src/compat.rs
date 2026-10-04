@@ -15,6 +15,9 @@ use std::fmt;
 pub enum Severity {
     /// Handled automatically by [`transpile`](crate::transpile); worth a glance.
     Rewritten,
+    /// Cannot be verified: a function that is not a built-in of any supported
+    /// dialect, assumed user-defined or from an extension.
+    Unverified,
     /// Translates, but behaves differently on the target.
     Warning,
     /// Cannot be expressed on the target; needs a manual change.
@@ -26,6 +29,7 @@ impl Severity {
         match self {
             Severity::Incompatible => "incompatible",
             Severity::Warning => "warning",
+            Severity::Unverified => "unverified",
             Severity::Rewritten => "rewritten",
         }
     }
@@ -75,10 +79,11 @@ impl fmt::Display for Report {
         )?;
         writeln!(
             f,
-            "  {} incompatible, {} warning{}, {} rewritten automatically",
+            "  {} incompatible, {} warning{}, {} unverified, {} rewritten automatically",
             self.count(Severity::Incompatible),
             self.count(Severity::Warning),
             if self.count(Severity::Warning) == 1 { "" } else { "s" },
+            self.count(Severity::Unverified),
             self.count(Severity::Rewritten)
         )?;
         if self.findings.is_empty() {
@@ -103,12 +108,34 @@ impl fmt::Display for Report {
     }
 }
 
-/// `true` when `stmt` (written for `source`) needs no manual change to run on
-/// `target`: no *incompatible* findings. Warnings and automatic rewrites do not count.
-pub fn is_compatible(stmt: &crate::ast::Statement, source: &dyn Dialect, target: &dyn Dialect) -> bool {
+/// Whether a statement runs on a target without manual changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Compatible,
+    /// Nothing is known to be wrong, but it calls functions that cannot be
+    /// verified on the target (not built-ins of any supported dialect).
+    Unverified,
+    Incompatible,
+}
+
+/// Verdict for `stmt` (written for `source`) on `target`. Warnings and automatic
+/// rewrites do not count against compatibility.
+pub fn verdict(stmt: &crate::ast::Statement, source: &dyn Dialect, target: &dyn Dialect) -> Verdict {
     let emitter = Emitter::for_analysis(source, target);
     let _ = emitter.statement(stmt);
-    !emitter.take_findings().iter().any(|f| f.severity == Severity::Incompatible)
+    let findings = emitter.take_findings();
+    if findings.iter().any(|f| f.severity == Severity::Incompatible) {
+        Verdict::Incompatible
+    } else if findings.iter().any(|f| f.severity == Severity::Unverified) {
+        Verdict::Unverified
+    } else {
+        Verdict::Compatible
+    }
+}
+
+/// `true` unless `stmt` needs a manual change to run on `target`.
+pub fn is_compatible(stmt: &crate::ast::Statement, source: &dyn Dialect, target: &dyn Dialect) -> bool {
+    verdict(stmt, source, target) != Verdict::Incompatible
 }
 
 /// Parses `sql` as `source` and reports what would need to change to run it on

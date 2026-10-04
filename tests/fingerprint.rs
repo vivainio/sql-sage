@@ -111,6 +111,23 @@ fn compat_code() {
     assert_eq!(code(Postgres, "SELECT NVL(a, 0) FROM t"), "ora");
     // nothing fits
     assert_eq!(code(Postgres, "SELECT a FROM t GROUP BY a HAVING sysdate > 1 AND now() > 1"), "-");
+    // catalogs: initcap exists in Oracle and Postgres only
+    assert_eq!(code(Postgres, "SELECT initcap(a), lpad(a, 5) FROM t"), "ora,pg");
+    assert_eq!(code(Postgres, "SELECT string_agg(a, ',') FROM t"), "pg,lite");
+    assert_eq!(code(Oracle, "SELECT ratio_to_report(a) OVER () FROM t"), "ora");
+    // same name, different meaning
+    assert_eq!(code(Oracle, "SELECT DECODE(a, 1, 'x', 'y') FROM t"), "ora");
+}
+
+#[test]
+fn unverifiable_functions_get_a_question_mark() {
+    // user-defined or extension functions: sure for the source dialect, unverified elsewhere
+    assert_eq!(code(Postgres, "SELECT my_udf(a) FROM t"), "ora?,pg,lite?");
+    assert_eq!(code(Postgres, "SELECT similarity(a, b) FROM t"), "ora?,pg,lite?");
+    assert_eq!(code(Oracle, "SELECT my_udf(a), nvl(a, 0) FROM t"), "ora");
+    assert_eq!(code(Sqlite, "SELECT my_udf(a) FROM t WHERE a GLOB 'x*'"), "lite");
+    // schema-qualified calls are user objects: ignored
+    assert_eq!(code(Postgres, "SELECT app.helper(a) FROM t"), "ora,pg,lite");
 }
 
 #[test]

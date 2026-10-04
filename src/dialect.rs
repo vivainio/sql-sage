@@ -120,6 +120,12 @@ pub trait Dialect: Debug {
     fn integer_division_truncates(&self) -> bool { true }
     /// `'a' || NULL` yields `'a'` rather than NULL (Oracle).
     fn concat_null_is_empty(&self) -> bool { false }
+    /// Is `lower_name` a built-in function of this dialect (latest release)?
+    /// See [`crate::functions`]. Custom dialects default to "yes".
+    fn has_function(&self, _lower_name: &str) -> bool { true }
+    /// A function that exists here under the same name but means something else
+    /// when called with `nargs` arguments (e.g. Postgres `decode`).
+    fn function_collision(&self, _upper_name: &str, _nargs: usize) -> Option<&'static str> { None }
     /// If `upper_name` (a function or pseudo-column, upper-cased) does **not**
     /// exist in this dialect, a short hint on what to use instead.
     fn function_hint(&self, _upper_name: &str) -> Option<&'static str> { None }
@@ -176,6 +182,14 @@ impl Dialect for PostgreSqlDialect {
     fn supports_update_from(&self) -> bool { true }
     fn supports_fetch_first(&self) -> bool { true }
     fn identifier_fold(&self) -> IdentifierFold { IdentifierFold::Lower }
+    fn has_function(&self, name: &str) -> bool { crate::functions::contains(DialectKind::Postgres, name) }
+    fn function_collision(&self, name: &str, nargs: usize) -> Option<&'static str> {
+        match name {
+            "DECODE" if nargs >= 3 => Some("postgres decode(text, format) decodes base64/hex; Oracle's DECODE(x, search, result, ...) needs CASE"),
+            "MIN" | "MAX" if nargs >= 2 => Some("with several arguments this is SQLite's scalar form; use LEAST / GREATEST"),
+            _ => None,
+        }
+    }
     fn function_hint(&self, name: &str) -> Option<&'static str> {
         Some(match name {
             "NVL" | "IFNULL" => "use COALESCE",
@@ -240,6 +254,7 @@ impl Dialect for SqliteDialect {
     fn supports_autoincrement(&self) -> bool { true }
     fn supports_identity_columns(&self) -> bool { false }
     fn supports_typed_literals(&self) -> bool { false }
+    fn has_function(&self, name: &str) -> bool { crate::functions::contains(DialectKind::Sqlite, name) }
     fn function_hint(&self, name: &str) -> Option<&'static str> {
         Some(match name {
             "NVL" => "use IFNULL or COALESCE",
@@ -300,6 +315,14 @@ impl Dialect for OracleDialect {
     fn empty_string_is_null(&self) -> bool { true }
     fn integer_division_truncates(&self) -> bool { false }
     fn concat_null_is_empty(&self) -> bool { true }
+    fn has_function(&self, name: &str) -> bool { crate::functions::contains(DialectKind::Oracle, name) }
+    fn function_collision(&self, name: &str, nargs: usize) -> Option<&'static str> {
+        match name {
+            "CONCAT" if nargs != 2 => Some("Oracle CONCAT takes exactly two arguments; chain with ||"),
+            "MIN" | "MAX" if nargs >= 2 => Some("with several arguments this is SQLite's scalar form; use LEAST / GREATEST"),
+            _ => None,
+        }
+    }
     fn function_hint(&self, name: &str) -> Option<&'static str> {
         Some(match name {
             "NOW" => "use SYSTIMESTAMP or CURRENT_TIMESTAMP",
@@ -358,6 +381,14 @@ pub enum DialectKind {
 impl DialectKind {
     /// Every supported dialect, in the order used by compatibility codes.
     pub const ALL: [DialectKind; 3] = [DialectKind::Oracle, DialectKind::Postgres, DialectKind::Sqlite];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DialectKind::Oracle => "oracle",
+            DialectKind::Postgres => "postgres",
+            DialectKind::Sqlite => "sqlite",
+        }
+    }
 
     /// Short code used in fingerprints: `ora`, `pg`, `lite`.
     pub fn code(self) -> &'static str {

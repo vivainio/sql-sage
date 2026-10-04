@@ -109,3 +109,40 @@ fn analysis_agrees_with_transpile() {
         assert_eq!(r.is_compatible(), transpiled.is_ok(), "{from:?}->{to:?} {sql}\n{r}\n{transpiled:?}");
     }
 }
+
+#[test]
+fn function_catalogs_decide_availability() {
+    // exists in another dialect but not on the target
+    let r = report(Postgres, Sqlite, "SELECT initcap(a), lpad(a, 5) FROM t");
+    assert!(has(&r, Severity::Incompatible, "INITCAP does not exist in sqlite (available in oracle/postgres)"));
+    assert!(has(&r, Severity::Incompatible, "LPAD does not exist in sqlite: no built-in"));
+    // present on the target: nothing to report, even where an old hint existed
+    let r = report(Postgres, Sqlite, "SELECT string_agg(a, ','), mod(a, 2), concat_ws('-', a, b) FROM t");
+    assert!(r.findings.iter().all(|f| f.severity != Severity::Incompatible), "{r}");
+    // Oracle-only analytic function used in a Postgres query
+    let r = report(Postgres, Postgres, "SELECT ratio_to_report(a) OVER () FROM t");
+    assert!(has(&r, Severity::Incompatible, "RATIO_TO_REPORT does not exist in postgres (available in oracle)"));
+}
+
+#[test]
+fn unknown_functions_are_unverified_not_incompatible() {
+    let r = report(Postgres, Oracle, "SELECT my_udf(a), pg_catalog.lower(a), app.helper(a) FROM t");
+    assert!(r.is_compatible());
+    assert_eq!(r.count(Severity::Unverified), 1, "{r}");
+    assert!(has(&r, Severity::Unverified, "MY_UDF is not a built-in of any supported dialect"));
+    // trusted in the dialect it was written for
+    let r = report(Postgres, Postgres, "SELECT my_udf(a) FROM t");
+    assert!(r.findings.is_empty());
+}
+
+#[test]
+fn same_name_different_meaning() {
+    let r = report(Oracle, Postgres, "SELECT DECODE(a, 1, 'x', 'y') FROM t");
+    assert!(has(&r, Severity::Incompatible, "DECODE exists in postgres but means something else"));
+    let r = report(Oracle, Postgres, "SELECT NVL(a, 0) FROM t");
+    assert!(has(&r, Severity::Incompatible, "function NVL does not exist in postgres: use COALESCE"));
+    let r = report(Sqlite, Oracle, "SELECT max(a, b) FROM t");
+    assert!(has(&r, Severity::Incompatible, "MAX exists in oracle but means something else"));
+    let r = report(Oracle, Oracle, "SELECT concat(a, b, c) FROM t");
+    assert!(has(&r, Severity::Incompatible, "CONCAT exists in oracle but means something else"));
+}

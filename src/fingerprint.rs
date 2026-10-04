@@ -149,17 +149,30 @@ pub struct Fingerprint {
     /// Dialects the statement runs on without manual changes, in `ora, pg, lite`
     /// order. Empty unless computed with [`Statement::fingerprint_for`].
     pub compat: Vec<DialectKind>,
+    /// Dialects where nothing is known to be wrong, but the statement calls
+    /// functions that cannot be verified there (not built-ins of any supported
+    /// dialect, so probably user-defined).
+    pub compat_maybe: Vec<DialectKind>,
 }
 
 impl Fingerprint {
-    /// Compatibility code such as `ora,pg,lite`, or `-` when no dialect is
-    /// compatible (or compatibility was not computed).
+    /// Compatibility code such as `ora,pg,lite`; a `?` marks a dialect that cannot
+    /// be fully verified (`ora?,pg,lite?`). `-` when no dialect is compatible (or
+    /// compatibility was not computed).
     pub fn compat_code(&self) -> String {
-        if self.compat.is_empty() {
-            "-".into()
-        } else {
-            self.compat.iter().map(|k| k.code()).collect::<Vec<_>>().join(",")
-        }
+        let parts: Vec<String> = DialectKind::ALL
+            .into_iter()
+            .filter_map(|k| {
+                if self.compat.contains(&k) {
+                    Some(k.code().to_string())
+                } else if self.compat_maybe.contains(&k) {
+                    Some(format!("{}?", k.code()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if parts.is_empty() { "-".into() } else { parts.join(",") }
     }
 
     /// Tables the statement modifies or defines.
@@ -211,7 +224,7 @@ impl Statement {
     pub fn fingerprint(&self) -> Fingerprint {
         let mut c = Collector::default();
         let kind = c.statement(self);
-        Fingerprint { kind, tables: c.tables, operations: c.ops, functions: c.functions, compat: vec![] }
+        Fingerprint { kind, tables: c.tables, operations: c.ops, functions: c.functions, compat: vec![], compat_maybe: vec![] }
     }
 
     /// Like [`Self::fingerprint`], plus the compatibility code for a statement
@@ -219,10 +232,13 @@ impl Statement {
     pub fn fingerprint_for(&self, source: DialectKind) -> Fingerprint {
         let mut f = self.fingerprint();
         let src = source.dialect();
-        f.compat = DialectKind::ALL
-            .into_iter()
-            .filter(|t| crate::compat::is_compatible(self, src.as_ref(), t.dialect().as_ref()))
-            .collect();
+        for t in DialectKind::ALL {
+            match crate::compat::verdict(self, src.as_ref(), t.dialect().as_ref()) {
+                crate::compat::Verdict::Compatible => f.compat.push(t),
+                crate::compat::Verdict::Unverified => f.compat_maybe.push(t),
+                crate::compat::Verdict::Incompatible => {}
+            }
+        }
         f
     }
 }

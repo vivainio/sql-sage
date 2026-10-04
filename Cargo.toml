@@ -1,0 +1,18 @@
+[package]
+name = "sql-sage"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-dialect SQL parser and syntax checker (PostgreSQL, SQLite, Oracle) producing one shared AST"
+license = "MIT"
+repository = "https://github.com/vivainio/sql-sage"
+readme = "README.md"
+
+[lib]
+name = "sql_sage"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sql-sage"
+path = "src/main.rs"
+
+[dependencies]

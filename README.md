@@ -10,11 +10,24 @@ SQL (any dialect) --parse--> shared AST --+--> SQL for another dialect   (transp
                                           +--> query fingerprint         (--fingerprint)
 ```
 
+## Install
+
+```sh
+pipx install sql-sage          # or: uv tool install sql-sage / pip install sql-sage
+```
+
+The PyPI package ships the `sql-sage` command as a prebuilt wheel (Linux, macOS, Windows); it has no
+Python API. Prebuilt binaries are also attached to each
+[GitHub release](https://github.com/vivainio/sql-sage/releases), or build from source with
+`cargo install --git https://github.com/vivainio/sql-sage`. As a Rust library:
+
+```toml
+sql-sage = { git = "https://github.com/vivainio/sql-sage" }
+```
+
 ## CLI
 
 ```sh
-cargo install --path .
-
 sql-sage -d oracle --check "SELECT * FROM t LIMIT 5"        # syntax check, exit 1 on error
 sql-sage -d oracle --to postgres -f query.sql                # translate
 sql-sage -d oracle --compat postgres -f query.sql            # what needs changing?
@@ -213,6 +226,25 @@ cargo clippy
 
 The library has no dependencies; `yaml-rust2` is a dev-dependency used to check that `--ast`
 output is valid YAML.
+
+## Releases
+
+The version in `Cargo.toml` is a placeholder (`0.0.0-dev`); the release workflow takes the real one
+from the git tag. To cut a release, let `gh` create the tag:
+
+```sh
+gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
+```
+
+That triggers `.github/workflows/release.yml`, which builds binaries for Linux, macOS (Intel and
+Apple Silicon) and Windows with checksums, builds wheels and an sdist with maturin, attaches the
+binaries to the release and publishes the wheels to PyPI via
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (no token stored). One-time setup on
+PyPI: add a (pending) publisher for project `sql-sage` with owner `vivainio`, repository `sql-sage`,
+workflow `release.yml` and environment `pypi`.
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `clippy -D warnings` and the tests on Linux,
+macOS and Windows, and smoke-tests a built wheel.
 
 ## License
 

@@ -1,11 +1,17 @@
 [package]
 name = "sql-sage"
-version = "0.1.0"
+# Placeholder only: the real version is injected from the git tag at release
+# time (release.yml). Never edit by hand; cut releases with `gh release create vX.Y.Z`.
+version = "0.0.0-dev"
 edition = "2021"
-description = "Multi-dialect SQL parser and syntax checker (PostgreSQL, SQLite, Oracle) producing one shared AST"
+rust-version = "1.82"
+description = "Parse, check, translate and review SQL for PostgreSQL, SQLite and Oracle with one shared AST"
+authors = ["Ville Vainio <vivainio@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/vivainio/sql-sage"
 readme = "README.md"
+keywords = ["sql", "parser", "oracle", "postgres", "sqlite"]
+categories = ["command-line-utilities", "parser-implementations", "database"]
 
 [lib]
 name = "sql_sage"

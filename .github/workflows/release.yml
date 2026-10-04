@@ -1,0 +1,171 @@
+name: Release
+
+# Cut a release with:  gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
+# That creates the tag, which triggers this workflow: it builds the binaries and
+# Python wheels with the version taken from the tag, attaches them to the
+# release and publishes the wheels to PyPI (Trusted Publishing).
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive-name: sql-sage-linux-x86_64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive-name: sql-sage-windows-x86_64.zip
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive-name: sql-sage-macos-x86_64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive-name: sql-sage-macos-arm64.tar.gz
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
+    - name: Build release binary
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Create archive (Unix)
+      if: matrix.os != 'windows-latest'
+      run: |
+        cd target/${{ matrix.target }}/release
+        tar czf ../../../${{ matrix.archive-name }} sql-sage
+        cd -
+
+    - name: Create archive (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        cd target/${{ matrix.target }}/release
+        7z a ../../../${{ matrix.archive-name }} sql-sage.exe
+        cd -
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.archive-name }}
+        path: ${{ matrix.archive-name }}
+
+  github-release:
+    name: Attach binaries to the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: artifacts/
+        pattern: sql-sage-*
+        merge-multiple: true
+
+    - name: Checksums
+      run: |
+        cd artifacts
+        sha256sum * > SHA256SUMS
+
+    - name: Create or update release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: ${{ github.ref_name }}
+        files: artifacts/*
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-wheels:
+    name: Wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set version from tag
+      shell: bash
+      run: |
+        sed -i.bak "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+        rm Cargo.toml.bak
+        grep '^version' Cargo.toml
+
+    - name: Build wheel
+      uses: PyO3/maturin-action@v1
+      with:
+        target: ${{ matrix.target }}
+        args: --release --out dist
+        manylinux: auto
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: wheels-${{ matrix.target }}
+        path: dist/
+
+  build-sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set version from tag
+      run: |
+        sed -i.bak "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+        rm Cargo.toml.bak
+
+    - name: Build sdist
+      uses: PyO3/maturin-action@v1
+      with:
+        command: sdist
+        args: --out dist
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: wheels-sdist
+        path: dist/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC token for PyPI Trusted Publishing
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: dist
+        pattern: wheels-*
+        merge-multiple: true
+
+    - uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist/

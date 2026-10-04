@@ -7,6 +7,7 @@ No dependencies. Every dialect parses into one shared AST, and everything else w
 SQL (any dialect) --parse--> shared AST --+--> SQL for another dialect   (transpile)
                                           +--> compatibility report      (--compat)
                                           +--> readable outline          (ordered / tight)
+                                          +--> query fingerprint         (--fingerprint)
 ```
 
 ## CLI
@@ -19,6 +20,7 @@ sql-sage -d oracle --to postgres -f query.sql                # translate
 sql-sage -d oracle --compat postgres -f query.sql            # what needs changing?
 sql-sage -d postgres --to ordered "SELECT ..."               # readable outline
 sql-sage -d postgres --to tight "SELECT ..."                 # symbolic outline
+sql-sage -d oracle --fingerprint -f queries.sql              # tables, operations, functions
 sql-sage -d sqlite --ast "SELECT 1"                          # debug AST
 ```
 
@@ -107,6 +109,23 @@ by c.name
 ~ revenue desc
 [:10]
 ```
+
+## Fingerprint
+
+A fingerprint says which **tables** a statement touches (and how), which **operations** it
+applies and which **functions** it calls. Literals, columns, aliases, bind parameters, CTE
+names and dialect spelling are ignored, so the same query shape gets the same fingerprint
+on every dialect and with any parameter values.
+
+```
+$ sql-sage -d oracle --fingerprint "SELECT NVL(a,0), count(*) FROM emp GROUP BY a"
+b0f00150db4166d4 select | emp:read | group aggregate | count() nvl()
+```
+
+Sections are `kind | tables | operations | functions` (`-` when empty). The leading id is a
+64-bit hash of that text, handy for grouping queries in logs or finding every query that
+writes to a table. From Rust: `fingerprint_sql(dialect, sql)` or `stmt.fingerprint()`, with
+`reads()`, `writes()`, `is_read_only()` and `id()` on the result.
 
 ## Scope and limits
 

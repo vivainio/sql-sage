@@ -17,6 +17,7 @@ pub mod compat;
 pub mod dialect;
 pub mod emit;
 pub mod error;
+pub mod fingerprint;
 pub mod lexer;
 pub mod parser;
 pub mod outline;
@@ -78,4 +79,9 @@ pub fn outline_sql(from: DialectKind, syntax: outline::Syntax, sql: &str) -> Res
 /// See [`compat`].
 pub fn check_compatibility(from: DialectKind, to: DialectKind, sql: &str) -> Result<compat::Report, ParseError> {
     compat::analyze(from.dialect().as_ref(), to.dialect().as_ref(), sql)
+}
+
+/// Fingerprints every statement in `sql` (see [`fingerprint`]).
+pub fn fingerprint_sql(from: DialectKind, sql: &str) -> Result<Vec<fingerprint::Fingerprint>, ParseError> {
+    Ok(parse_sql(from.dialect().as_ref(), sql)?.iter().map(|s| s.fingerprint()).collect())
 }

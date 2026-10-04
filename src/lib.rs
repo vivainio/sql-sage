@@ -83,5 +83,5 @@ pub fn check_compatibility(from: DialectKind, to: DialectKind, sql: &str) -> Res
 
 /// Fingerprints every statement in `sql` (see [`fingerprint`]).
 pub fn fingerprint_sql(from: DialectKind, sql: &str) -> Result<Vec<fingerprint::Fingerprint>, ParseError> {
-    Ok(parse_sql(from.dialect().as_ref(), sql)?.iter().map(|s| s.fingerprint()).collect())
+    Ok(parse_sql(from.dialect().as_ref(), sql)?.iter().map(|s| s.fingerprint_for(from)).collect())
 }

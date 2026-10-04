@@ -103,6 +103,14 @@ impl fmt::Display for Report {
     }
 }
 
+/// `true` when `stmt` (written for `source`) needs no manual change to run on
+/// `target`: no *incompatible* findings. Warnings and automatic rewrites do not count.
+pub fn is_compatible(stmt: &crate::ast::Statement, source: &dyn Dialect, target: &dyn Dialect) -> bool {
+    let emitter = Emitter::for_analysis(source, target);
+    let _ = emitter.statement(stmt);
+    !emitter.take_findings().iter().any(|f| f.severity == Severity::Incompatible)
+}
+
 /// Parses `sql` as `source` and reports what would need to change to run it on
 /// `target`. Findings are ordered by statement, then most severe first.
 pub fn analyze(source: &dyn Dialect, target: &dyn Dialect, sql: &str) -> Result<Report, ParseError> {

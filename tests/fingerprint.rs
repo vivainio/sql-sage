@@ -88,3 +88,36 @@ fn read_write_helpers_and_stable_id() {
     assert_eq!(f.id(), g.id());
     assert_eq!(f.id().len(), 16);
 }
+
+fn code(kind: DialectKind, sql: &str) -> String {
+    fingerprint_sql(kind, sql).unwrap()[0].compat_code()
+}
+
+#[test]
+fn compat_code() {
+    // portable SQL runs everywhere, whichever dialect it was written in
+    assert_eq!(code(Postgres, "SELECT a FROM t WHERE b = 1 ORDER BY a LIMIT 5"), "ora,pg,lite");
+    assert_eq!(code(Oracle, "SELECT a FROM t ORDER BY a FETCH FIRST 5 ROWS ONLY"), "ora,pg,lite");
+    assert_eq!(code(Oracle, "SELECT 1 FROM dual"), "ora,pg,lite");
+    // rewrites and warnings do not reduce compatibility
+    assert_eq!(code(Postgres, "SELECT a::int, a ILIKE 'x' FROM t"), "ora,pg,lite");
+    // engine-specific functions / syntax narrow it
+    assert_eq!(code(Oracle, "SELECT NVL(a, 0) FROM t"), "ora");
+    assert_eq!(code(Postgres, "SELECT now()"), "pg");
+    assert_eq!(code(Postgres, "INSERT INTO t VALUES (1) RETURNING id"), "pg,lite");
+    assert_eq!(code(Postgres, "SELECT data->>'k' FROM t"), "pg,lite");
+    assert_eq!(code(Sqlite, "SELECT a GLOB 'x*' FROM t"), "lite");
+    // a function the *source* dialect lacks is not claimed as compatible with it
+    assert_eq!(code(Postgres, "SELECT NVL(a, 0) FROM t"), "ora");
+    // nothing fits
+    assert_eq!(code(Postgres, "SELECT a FROM t GROUP BY a HAVING sysdate > 1 AND now() > 1"), "-");
+}
+
+#[test]
+fn compat_code_does_not_change_the_id() {
+    let with = &fingerprint_sql(Postgres, "SELECT NVL(a, 0) FROM t").unwrap()[0];
+    let bare = sql_sage::parse_sql(Postgres.dialect().as_ref(), "SELECT NVL(a, 0) FROM t").unwrap()[0].fingerprint();
+    assert_eq!(with.id(), bare.id());
+    assert_eq!(with.canonical(), bare.canonical());
+    assert_eq!(bare.compat_code(), "-");
+}

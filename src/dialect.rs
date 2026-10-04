@@ -356,6 +356,18 @@ pub enum DialectKind {
 }
 
 impl DialectKind {
+    /// Every supported dialect, in the order used by compatibility codes.
+    pub const ALL: [DialectKind; 3] = [DialectKind::Oracle, DialectKind::Postgres, DialectKind::Sqlite];
+
+    /// Short code used in fingerprints: `ora`, `pg`, `lite`.
+    pub fn code(self) -> &'static str {
+        match self {
+            DialectKind::Oracle => "ora",
+            DialectKind::Postgres => "pg",
+            DialectKind::Sqlite => "lite",
+        }
+    }
+
     pub fn dialect(self) -> Box<dyn Dialect> {
         match self {
             DialectKind::Postgres => Box::new(PostgreSqlDialect),
@@ -370,8 +382,8 @@ impl FromStr for DialectKind {
     fn from_str(s: &str) -> Result<Self, String> {
         match s.to_ascii_lowercase().as_str() {
             "postgres" | "postgresql" | "pg" => Ok(Self::Postgres),
-            "sqlite" | "sqlite3" => Ok(Self::Sqlite),
-            "oracle" | "plsql" => Ok(Self::Oracle),
+            "sqlite" | "sqlite3" | "lite" => Ok(Self::Sqlite),
+            "oracle" | "plsql" | "ora" => Ok(Self::Oracle),
             other => Err(format!("unknown dialect '{other}' (expected postgres, sqlite or oracle)")),
         }
     }

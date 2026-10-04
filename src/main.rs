@@ -71,7 +71,7 @@ fn main() -> ExitCode {
         return match fingerprint_sql(kind, &sql) {
             Ok(fps) => {
                 for f in fps {
-                    println!("{} {f}", f.id());
+                    println!("{} [{}] {f}", f.id(), f.compat_code());
                 }
                 ExitCode::SUCCESS
             }

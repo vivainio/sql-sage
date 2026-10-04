@@ -119,13 +119,22 @@ on every dialect and with any parameter values.
 
 ```
 $ sql-sage -d oracle --fingerprint "SELECT NVL(a,0), count(*) FROM emp GROUP BY a"
-b0f00150db4166d4 select | emp:read | group aggregate | count() nvl()
+b0f00150db4166d4 [ora] select | emp:read | group aggregate | count() nvl()
 ```
 
 Sections are `kind | tables | operations | functions` (`-` when empty). The leading id is a
 64-bit hash of that text, handy for grouping queries in logs or finding every query that
-writes to a table. From Rust: `fingerprint_sql(dialect, sql)` or `stmt.fingerprint()`, with
-`reads()`, `writes()`, `is_read_only()` and `id()` on the result.
+writes to a table.
+
+The bracketed code lists the dialects the statement runs on **without manual changes**:
+`ora`, `pg`, `lite` (for example `[ora,pg,lite]` for portable SQL, `[pg,lite]` for
+`RETURNING`, `[ora]` for `NVL`, `-` when none fit). It uses the same analysis as `--compat`
+against every dialect, the source one included. Warnings and automatic rewrites do not
+reduce compatibility. The code is not part of the id, so the id depends only on query shape.
+
+From Rust: `fingerprint_sql(dialect, sql)` or `stmt.fingerprint_for(dialect)` (use
+`stmt.fingerprint()` for shape only), with `reads()`, `writes()`, `is_read_only()`, `id()`
+and `compat_code()` on the result.
 
 ## Scope and limits
 

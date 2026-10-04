@@ -8,8 +8,14 @@
 //! ```
 //!
 //! Sections are `kind | tables | operations | functions`; an empty section is `-`.
+//!
+//! [`Statement::fingerprint_for`] also fills in a compatibility code such as
+//! `ora,pg,lite`: the dialects the statement runs on without manual changes
+//! (see [`crate::compat`]). It is not part of [`Fingerprint::canonical`] or
+//! [`Fingerprint::id`], so the id depends only on the query shape.
 
 use crate::ast::*;
+use crate::dialect::DialectKind;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -140,9 +146,22 @@ pub struct Fingerprint {
     /// Lower-cased names of every function called (aggregates and window
     /// functions included), e.g. `count`, `nvl`, `pg_catalog.now`.
     pub functions: BTreeSet<String>,
+    /// Dialects the statement runs on without manual changes, in `ora, pg, lite`
+    /// order. Empty unless computed with [`Statement::fingerprint_for`].
+    pub compat: Vec<DialectKind>,
 }
 
 impl Fingerprint {
+    /// Compatibility code such as `ora,pg,lite`, or `-` when no dialect is
+    /// compatible (or compatibility was not computed).
+    pub fn compat_code(&self) -> String {
+        if self.compat.is_empty() {
+            "-".into()
+        } else {
+            self.compat.iter().map(|k| k.code()).collect::<Vec<_>>().join(",")
+        }
+    }
+
     /// Tables the statement modifies or defines.
     pub fn writes(&self) -> Vec<&str> {
         self.tables.iter().filter(|(_, a)| a.iter().any(|a| a.is_write())).map(|(t, _)| t.as_str()).collect()
@@ -192,7 +211,19 @@ impl Statement {
     pub fn fingerprint(&self) -> Fingerprint {
         let mut c = Collector::default();
         let kind = c.statement(self);
-        Fingerprint { kind, tables: c.tables, operations: c.ops, functions: c.functions }
+        Fingerprint { kind, tables: c.tables, operations: c.ops, functions: c.functions, compat: vec![] }
+    }
+
+    /// Like [`Self::fingerprint`], plus the compatibility code for a statement
+    /// written for `source`.
+    pub fn fingerprint_for(&self, source: DialectKind) -> Fingerprint {
+        let mut f = self.fingerprint();
+        let src = source.dialect();
+        f.compat = DialectKind::ALL
+            .into_iter()
+            .filter(|t| crate::compat::is_compatible(self, src.as_ref(), t.dialect().as_ref()))
+            .collect();
+        f
     }
 }
 

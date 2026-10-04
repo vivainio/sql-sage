@@ -21,8 +21,9 @@ sql-sage -d oracle --compat postgres -f query.sql            # what needs changi
 sql-sage -d postgres --to ordered "SELECT ..."               # readable outline
 sql-sage -d postgres --to tight "SELECT ..."                 # symbolic outline
 sql-sage -d oracle --fingerprint -f queries.sql              # tables, operations, functions
-sql-sage -d sqlite --ast "SELECT 1"                          # AST as compact YAML-like text
-sql-sage -d sqlite --ast-debug "SELECT 1"                    # AST as verbose Rust Debug output
+sql-sage -d sqlite --ast "SELECT 1"                          # AST as YAML
+sql-sage -d sqlite --ast-compact "SELECT 1"                  # shorter YAML-like text (not valid YAML)
+sql-sage -d sqlite --ast-debug "SELECT 1"                    # verbose Rust Debug output
 ```
 
 Dialects: `postgres`, `sqlite`, `oracle`. SQL comes from `-f FILE`, an argument, or stdin.
@@ -163,22 +164,29 @@ Re-run the script to move to newer releases:
 
 ## AST dump
 
-`--ast` prints the shared AST as compact YAML-like text: empty fields are left out, wrapper
-nodes collapsed, small nodes inlined. `--ast-debug` prints the verbose Rust `Debug` form.
+`--ast` prints the shared AST as **YAML** that any YAML parser loads. The node type is a key;
+empty fields (`None`, `[]`, `false`, zero counts) are left out, wrapper nodes collapsed, and
+small nodes inlined. Several statements become a multi-document stream (`---`).
 
 ```
 $ sql-sage -d sqlite --ast "SELECT a FROM t WHERE b > 1 LIMIT 5, 10"
-Query
-  body: Select
-    projection: [Identifier a]
-    from: [TableWithJoins {relation: Table {name: t}}]
-    selection: BinaryOp {left: Identifier b, op: Gt, right: Number 1}
-  limit: Number 10
-  offset: Number 5
+Query:
+  body:
+    Select:
+      projection: [{Identifier: a}]
+      from: [{TableWithJoins: {relation: {Table: {name: t}}}}]
+      selection: {BinaryOp: {left: {Identifier: b}, op: Gt, right: {Number: 1}}}
+  limit: {Number: 10}
+  offset: {Number: 5}
 ```
 
-From Rust: `sql_sage::ast_dump::yamlish(&stmt)`. The dump is for people; its shape follows the AST
-and is not a stable interchange format.
+Strings stay strings (`'true'`, `'1'`, `'2020-01-01'` are quoted), numbers and booleans are typed,
+quoted identifiers appear as `{Quoted: name}`, and keys YAML 1.1 would read as booleans (`On`)
+are quoted. `--ast-compact` is a shorter form for reading (`body: Select` with fields nested
+under it) and is **not** valid YAML; `--ast-debug` is the verbose Rust `Debug` output.
+
+From Rust: `sql_sage::ast_dump::{yaml, compact}`. The shape follows the AST and is not a stable
+interchange format.
 
 ## Scope and limits
 
@@ -202,6 +210,9 @@ and is not a stable interchange format.
 cargo test
 cargo clippy
 ```
+
+The library has no dependencies; `yaml-rust2` is a dev-dependency used to check that `--ast`
+output is valid YAML.
 
 ## License
 

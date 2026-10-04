@@ -4,7 +4,7 @@ use sql_sage::{check_compatibility, fingerprint_sql, outline_sql, parse_sql, tra
 use std::io::Read;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: sql-sage [-d postgres|sqlite|oracle] [--to postgres|sqlite|oracle|ordered|tight] [--compat TARGET] [--fingerprint] [--check] [--ast | --ast-debug] [-f FILE | SQL]
+const USAGE: &str = "usage: sql-sage [-d postgres|sqlite|oracle] [--to postgres|sqlite|oracle|ordered|tight] [--compat TARGET] [--fingerprint] [--check] [--ast | --ast-compact | --ast-debug] [-f FILE | SQL]
   reads SQL from FILE, the argument, or stdin
   --to     re-emit for another dialect (errors if inexpressible), or ordered / tight for
            readable non-SQL syntaxes (ordered: words, tight: symbols)
@@ -12,12 +12,13 @@ const USAGE: &str = "usage: sql-sage [-d postgres|sqlite|oracle] [--to postgres|
            (exit code 1 if anything is incompatible)
   --fingerprint  print each statement's tables and operations, with a stable id
   --check  only validate syntax (exit code 1 on error)
-  --ast    print the AST as compact YAML-like text instead of normalized SQL
-  --ast-debug  print the AST as Rust Debug output (verbose)";
+  --ast    print the AST as YAML instead of normalized SQL
+  --ast-compact  shorter YAML-like text for reading (not valid YAML)
+  --ast-debug    Rust Debug output (verbose)";
 
 fn main() -> ExitCode {
     let mut kind = DialectKind::Postgres;
-    let (mut check, mut ast, mut ast_debug) = (false, false, false);
+    let (mut check, mut ast, mut ast_compact, mut ast_debug) = (false, false, false, false);
     let mut to: Option<DialectKind> = None;
     let mut to_syntax: Option<Syntax> = None;
     let mut compat: Option<DialectKind> = None;
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
             "--fingerprint" => fingerprint = true,
             "--check" => check = true,
             "--ast" => ast = true,
+            "--ast-compact" => ast_compact = true,
             "--ast-debug" => ast_debug = true,
             "-f" => match args.next().map(std::fs::read_to_string) {
                 Some(Ok(s)) => sql = Some(s),
@@ -111,13 +113,15 @@ fn main() -> ExitCode {
         Ok(stmts) => {
             if !check {
                 for (i, s) in stmts.iter().enumerate() {
-                    if ast && !ast_debug && i > 0 {
+                    if (ast || ast_compact) && !ast_debug && i > 0 {
                         println!("---");
                     }
                     if ast_debug {
                         println!("{s:#?}")
+                    } else if ast_compact {
+                        println!("{}", sql_sage::ast_dump::compact(s))
                     } else if ast {
-                        println!("{}", sql_sage::ast_dump::yamlish(s))
+                        println!("{}", sql_sage::ast_dump::yaml(s))
                     } else {
                         println!("{s};")
                     }

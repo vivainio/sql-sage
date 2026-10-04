@@ -16,3 +16,6 @@ name = "sql-sage"
 path = "src/main.rs"
 
 [dependencies]
+
+[dev-dependencies]
+yaml-rust2 = "0.13.0"

@@ -13,6 +13,7 @@
 //! ```
 
 pub mod ast;
+pub mod ast_dump;
 pub mod compat;
 pub mod dialect;
 pub mod emit;

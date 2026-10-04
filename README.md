@@ -21,7 +21,8 @@ sql-sage -d oracle --compat postgres -f query.sql            # what needs changi
 sql-sage -d postgres --to ordered "SELECT ..."               # readable outline
 sql-sage -d postgres --to tight "SELECT ..."                 # symbolic outline
 sql-sage -d oracle --fingerprint -f queries.sql              # tables, operations, functions
-sql-sage -d sqlite --ast "SELECT 1"                          # debug AST
+sql-sage -d sqlite --ast "SELECT 1"                          # AST as compact YAML-like text
+sql-sage -d sqlite --ast-debug "SELECT 1"                    # AST as verbose Rust Debug output
 ```
 
 Dialects: `postgres`, `sqlite`, `oracle`. SQL comes from `-f FILE`, an argument, or stdin.
@@ -159,6 +160,25 @@ those are flagged as collisions. Schema- or package-qualified calls are ignored.
 
 Re-run the script to move to newer releases:
 `tools/gen_function_catalogs.py --pg 19 --sqlite <path> --oracle 26` (needs network, `gcc`, `unzip`).
+
+## AST dump
+
+`--ast` prints the shared AST as compact YAML-like text: empty fields are left out, wrapper
+nodes collapsed, small nodes inlined. `--ast-debug` prints the verbose Rust `Debug` form.
+
+```
+$ sql-sage -d sqlite --ast "SELECT a FROM t WHERE b > 1 LIMIT 5, 10"
+Query
+  body: Select
+    projection: [Identifier a]
+    from: [TableWithJoins {relation: Table {name: t}}]
+    selection: BinaryOp {left: Identifier b, op: Gt, right: Number 1}
+  limit: Number 10
+  offset: Number 5
+```
+
+From Rust: `sql_sage::ast_dump::yamlish(&stmt)`. The dump is for people; its shape follows the AST
+and is not a stable interchange format.
 
 ## Scope and limits
 

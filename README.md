@@ -12,9 +12,20 @@ SQL (any dialect) --parse--> shared AST --+--> SQL for another dialect   (transp
 
 ## Install
 
+The easiest way is [uv](https://docs.astral.sh/uv/), which installs the command into its own isolated
+environment and puts `sql-sage` on your `PATH`:
+
 ```sh
-pipx install sql-sage          # or: uv tool install sql-sage / pip install sql-sage
+uv tool install sql-sage       # install
+sql-sage --help
+
+uvx sql-sage -d oracle --check "SELECT 1 FROM dual"   # or run once without installing
+
+uv tool upgrade sql-sage       # update
+uv tool uninstall sql-sage     # remove
 ```
+
+`pipx install sql-sage` and `pip install sql-sage` work too.
 
 The PyPI package ships the `sql-sage` command as a prebuilt wheel (Linux, macOS, Windows); it has no
 Python API. Prebuilt binaries are also attached to each

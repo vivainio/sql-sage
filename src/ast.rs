@@ -181,6 +181,15 @@ pub enum Expr {
     Cast { expr: Box<Expr>, data_type: DataType },
     Case { operand: Option<Box<Expr>>, branches: Vec<CaseBranch>, else_result: Option<Box<Expr>> },
     Function(Function),
+    Trim { side: Option<TrimSide>, chars: Option<Box<Expr>>, expr: Box<Expr> },
+}
+
+/// Which end `TRIM(<side> chars FROM expr)` cuts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrimSide {
+    Leading,
+    Trailing,
+    Both,
 }
 
 #[derive(Debug, Clone, PartialEq)]

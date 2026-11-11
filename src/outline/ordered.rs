@@ -548,6 +548,16 @@ impl Outline {
                 s.push_str(" end");
                 s
             }
+            Expr::Trim { side, chars, expr } => {
+                let side = match side {
+                    Some(TrimSide::Leading) => "leading ",
+                    Some(TrimSide::Trailing) => "trailing ",
+                    Some(TrimSide::Both) => "both ",
+                    None => "",
+                };
+                let chars = chars.as_ref().map(|c| format!("{} ", self.expr(c))).unwrap_or_default();
+                format!("trim({side}{chars}from {})", self.expr(expr))
+            }
             Expr::Function(f) => {
                 let args = f
                     .args

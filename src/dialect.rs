@@ -179,6 +179,10 @@ pub trait Dialect: Debug {
     fn supports_typed_literals(&self) -> bool {
         true
     }
+    /// `TRIM(LEADING 'x' FROM y)` (SQLite spells it `LTRIM(y, 'x')`).
+    fn supports_trim_from(&self) -> bool {
+        true
+    }
     fn supports_partial_index(&self) -> bool {
         true
     }
@@ -413,6 +417,9 @@ impl Dialect for SqliteDialect {
         true
     }
     fn supports_identity_columns(&self) -> bool {
+        false
+    }
+    fn supports_trim_from(&self) -> bool {
         false
     }
     fn supports_typed_literals(&self) -> bool {

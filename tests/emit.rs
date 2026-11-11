@@ -134,3 +134,31 @@ fn emitted_sql_reparses_in_target() {
     }
     assert!(emitted > 30);
 }
+
+#[test]
+fn trim_with_side_or_characters() {
+    assert_eq!(t(Oracle, Sqlite, "SELECT TRIM(LEADING '0' FROM a) FROM t"), "SELECT LTRIM(a, '0') FROM t;");
+    assert_eq!(t(Oracle, Sqlite, "SELECT TRIM(TRAILING ' ' FROM a) FROM t"), "SELECT RTRIM(a, ' ') FROM t;");
+    assert_eq!(t(Oracle, Sqlite, "SELECT TRIM(BOTH 'x' FROM a) FROM t"), "SELECT TRIM(a, 'x') FROM t;");
+    assert_eq!(t(Oracle, Sqlite, "SELECT TRIM('x' FROM a) FROM t"), "SELECT TRIM(a, 'x') FROM t;");
+    assert_eq!(t(Oracle, Sqlite, "SELECT TRIM(LEADING FROM a) FROM t"), "SELECT LTRIM(a) FROM t;");
+    // the operands are translated too, and may hold calls and nested trims
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT TRIM(LEADING '0' FROM TRIM(NVL(a, ' '))) FROM t"),
+        "SELECT LTRIM(TRIM(NVL(a, ' ')), '0') FROM t;"
+    );
+    // other targets keep the standard spelling
+    assert_eq!(
+        t(Oracle, Postgres, "SELECT trim(leading '0' from a) FROM t"),
+        "SELECT TRIM(LEADING '0' FROM a) FROM t;"
+    );
+    assert_eq!(t(Oracle, Oracle, "SELECT TRIM('x' FROM a) FROM t"), "SELECT TRIM('x' FROM a) FROM t;");
+}
+
+#[test]
+fn plain_trim_is_an_ordinary_call() {
+    assert_eq!(t(Oracle, Sqlite, "SELECT TRIM(a) FROM t"), "SELECT TRIM(a) FROM t;");
+    assert_eq!(t(Sqlite, Sqlite, "SELECT trim(a, 'x') FROM t"), "SELECT trim(a, 'x') FROM t;");
+    assert!(check_syntax(Oracle, "SELECT TRIM(LEADING '0' FROM a) FROM t").is_ok());
+    assert!(check_syntax(Oracle, "SELECT TRIM(LEADING '0' a) FROM t").is_err());
+}

@@ -587,6 +587,13 @@ impl Collector {
                     self.expr(e);
                 }
             }
+            Expr::Trim { chars, expr, .. } => {
+                self.functions.insert("trim".to_string());
+                if let Some(c) = chars {
+                    self.expr(c);
+                }
+                self.expr(expr);
+            }
             Expr::Function(f) => {
                 self.functions.insert(f.name.0.iter().map(|i| i.value.to_lowercase()).collect::<Vec<_>>().join("."));
                 for a in &f.args {

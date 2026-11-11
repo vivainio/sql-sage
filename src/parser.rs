@@ -1062,8 +1062,36 @@ impl<'a> Parser<'a> {
         Ok(Expr::Case { operand, branches, else_result })
     }
 
+    /// After `TRIM (`: the `[side] [chars] FROM expr` form, or `None` (nothing consumed) for an ordinary call.
+    fn parse_trim_from(&mut self) -> Result<Option<Expr>> {
+        let start = self.index;
+        let side = match self.parse_one_of_keywords(&["LEADING", "TRAILING", "BOTH"]) {
+            Some("LEADING") => Some(TrimSide::Leading),
+            Some("TRAILING") => Some(TrimSide::Trailing),
+            Some(_) => Some(TrimSide::Both),
+            None => None,
+        };
+        let chars = if self.peek_keyword("FROM") { None } else { Some(Box::new(self.parse_expr()?)) };
+        if !self.parse_keyword("FROM") {
+            if side.is_some() {
+                return self.expected("FROM");
+            }
+            // `TRIM(expr)` or `TRIM(a, b)`: an ordinary call
+            self.index = start;
+            return Ok(None);
+        }
+        let expr = Box::new(self.parse_expr()?);
+        self.expect_token(&Token::RParen)?;
+        Ok(Some(Expr::Trim { side, chars, expr }))
+    }
+
     fn parse_function(&mut self, name: ObjectName) -> Result<Expr> {
         self.expect_token(&Token::LParen)?;
+        if matches!(name.0.as_slice(), [n] if n.value.eq_ignore_ascii_case("trim")) {
+            if let Some(e) = self.parse_trim_from()? {
+                return Ok(e);
+            }
+        }
         let distinct = self.parse_keyword("DISTINCT");
         let mut args = vec![];
         if !self.consume_token(&Token::RParen) {

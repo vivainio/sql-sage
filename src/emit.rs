@@ -884,6 +884,7 @@ impl<'a> Emitter<'a> {
                 s
             }
             Expr::Function(f) => self.function(f)?,
+            Expr::Trim { side, chars, expr } => self.trim(*side, chars.as_deref(), expr)?,
         })
     }
 
@@ -988,6 +989,34 @@ impl<'a> Emitter<'a> {
                 );
             }
         }
+    }
+
+    fn trim(&self, side: Option<TrimSide>, chars: Option<&Expr>, expr: &Expr) -> R {
+        let (e, c) = (self.expr(expr)?, chars.map(|c| self.expr(c)).transpose()?);
+        if self.has(|d| d.supports_trim_from()) {
+            let side = match side {
+                Some(TrimSide::Leading) => "LEADING ",
+                Some(TrimSide::Trailing) => "TRAILING ",
+                Some(TrimSide::Both) => "BOTH ",
+                None => "",
+            };
+            return Ok(match c {
+                Some(c) => format!("TRIM({side}{c} FROM {e})"),
+                None if side.is_empty() => format!("TRIM({e})"),
+                None => format!("TRIM({side}FROM {e})"),
+            });
+        }
+        let func = match side {
+            Some(TrimSide::Leading) => "LTRIM",
+            Some(TrimSide::Trailing) => "RTRIM",
+            _ => "TRIM",
+        };
+        let out = match c {
+            Some(c) => format!("{func}({e}, {c})"),
+            None => format!("{func}({e})"),
+        };
+        self.note(Severity::Rewritten, "TRIM(... FROM ...) -> TRIM/LTRIM/RTRIM(expr, chars)", Some(out.clone()));
+        Ok(out)
     }
 
     fn function(&self, f: &Function) -> R {

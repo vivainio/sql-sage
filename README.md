@@ -190,12 +190,12 @@ that are not modeled (`MOVE`, `ENABLE CONSTRAINT`, `LOGGING`, partition maintena
 statements such as `COMMIT`, `GRANT`, `COMMENT ON`, `CALL`, `ALTER VIEW ... COMPILE` or
 `DROP FUNCTION` are accepted and have no effect on the schema.
 
-PL/SQL units (anonymous blocks, functions, procedures, triggers, packages, types) are recognized
-and extend to the next line that holds only `/`, but their bodies are not analyzed; the summary
-counts them. The exception is the SQL in `EXECUTE IMMEDIATE '...'` strings of anonymous
-`BEGIN ... END` / `DECLARE ... END` blocks (also parenthesised, or literals joined with `||`): it
-is extracted and applied in place, as if the block ran it unconditionally. Strings built from
-variables, and anything inside functions, procedures and triggers, are not seen. Extracted
+PL/SQL units (anonymous blocks, stored functions and procedures, triggers including compound
+triggers) are parsed completely, but only for their syntax: a schema is not derived from their
+logic, and the summary counts them. The exception is the SQL in `EXECUTE IMMEDIATE '...'` strings
+of anonymous `BEGIN ... END` / `DECLARE ... END` blocks (also parenthesised, or literals joined with
+`||`): it is extracted and applied in place, as if the block ran it unconditionally. Strings built
+from variables, and anything inside functions, procedures and triggers, are not seen. Extracted
 statements that cannot apply (the table already exists, the column is missing) are usually
 guarded by an `IF`, so they are not errors; `-v` lists them as "not applied".
 
@@ -268,9 +268,12 @@ interchange format.
   (incl. `ON CONFLICT`, Oracle `INSERT ALL`), `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`,
   `CREATE TABLE` (incl. `AS SELECT`), `ALTER TABLE`, `CREATE INDEX`, `CREATE SEQUENCE`,
   `CREATE VIEW`, `DROP`, and Oracle's `START WITH ... CONNECT BY`.
+* PL/SQL: anonymous blocks, functions, procedures and triggers (declarations, `IF`/`CASE`/loops,
+  cursors, `EXECUTE IMMEDIATE`, exception handlers, `SELECT ... INTO`, `RETURNING ... INTO`,
+  `:NEW`/`:OLD`, named arguments) are parsed into `Statement::Plsql`. Types are kept as text.
+  Packages and object types are not parsed.
 * Accepted but not modeled: `COMMIT`, `GRANT`, `COMMENT ON`, `CALL`, `ALTER` of anything but
-  tables, `CREATE` of anything but the above (synonyms, materialized views, ...), and PL/SQL units
-  (their text is kept, their bodies are not parsed).
+  tables, and `CREATE` of anything but the above (synonyms, materialized views, ...).
 * Not covered: Oracle `(+)` joins, window frames, `IS DISTINCT FROM`, and the dialects of other
   databases (T-SQL `GO`, `[bracketed]` identifiers, ...).
 * The parser is lenient in places (for example `AUTOINCREMENT` is accepted in every dialect).

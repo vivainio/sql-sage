@@ -228,3 +228,40 @@ fn oracle_functions_become_sqlite_constructs() {
     // other targets are untouched
     assert_eq!(t(Oracle, Postgres, "SELECT NVL(a, 0) FROM t"), "SELECT NVL(a, 0) FROM t;");
 }
+
+#[test]
+fn more_oracle_functions_become_sqlite_constructs() {
+    let o = |sql: &str| t(Oracle, Sqlite, sql);
+    assert_eq!(o("SELECT GREATEST(a, b, 3), LEAST(a, b) FROM t"), "SELECT max(a, b, 3), min(a, b) FROM t;");
+    assert_eq!(o("SELECT CHR(65), ASCII(x) FROM t"), "SELECT char(65), unicode(x) FROM t;");
+    assert_eq!(o("SELECT a FROM t WHERE LNNVL(a > 1)"), "SELECT a FROM t WHERE (a > 1) IS NOT TRUE;");
+    assert_eq!(o("SELECT TO_NUMBER(x) FROM t"), "SELECT CAST(x AS NUMERIC) FROM t;");
+    assert_eq!(o("SELECT LAST_DAY(d) FROM t"), "SELECT date(d, 'start of month', '+1 month', '-1 day') FROM t;");
+    assert_eq!(
+        o("SELECT LPAD(x, 5, 'ab') FROM t"),
+        "SELECT substr(substr(replace(hex(zeroblob(5)), '00', 'ab'), 1, max(5 - length(x), 0)) || x, 1, 5) FROM t;"
+    );
+    assert_eq!(
+        o("SELECT RPAD(x, 5) FROM t"),
+        "SELECT substr(x || substr(replace(hex(zeroblob(5)), '00', ' '), 1, max(5 - length(x), 0)), 1, 5) FROM t;"
+    );
+    assert_eq!(
+        o("SELECT INSTR(x, 'a', 2) FROM t"),
+        "SELECT CASE WHEN instr(substr(x, 2), 'a') = 0 THEN 0 ELSE instr(substr(x, 2), 'a') + 2 - 1 END FROM t;"
+    );
+    assert_eq!(
+        o("SELECT TO_CHAR(d, 'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(d, 'DDD \"of\" YYYY') FROM t"),
+        "SELECT strftime('%Y-%m-%d %H:%M:%S', d), strftime('%j of %Y', d) FROM t;"
+    );
+    assert_eq!(
+        o("SELECT TO_DATE(x, 'YYYY-MM-DD'), TO_DATE(x, 'YYYY-MM-DD HH24:MI:SS') FROM t"),
+        "SELECT date(x), datetime(x) FROM t;"
+    );
+    assert_eq!(o("SELECT LOCALTIMESTAMP FROM dual"), "SELECT datetime('now', 'localtime');");
+    // masks and forms without an exact equivalent are left alone
+    assert_eq!(o("SELECT TO_CHAR(d, 'Month DD') FROM t"), "SELECT TO_CHAR(d, 'Month DD') FROM t;");
+    assert_eq!(o("SELECT TO_DATE(x, 'DD.MM.YYYY') FROM t"), "SELECT TO_DATE(x, 'DD.MM.YYYY') FROM t;");
+    assert_eq!(o("SELECT TO_CHAR(n, '999.99') FROM t"), "SELECT TO_CHAR(n, '999.99') FROM t;");
+    assert_eq!(o("SELECT INSTR(x, 'a', -1) FROM t"), "SELECT INSTR(x, 'a', -1) FROM t;");
+    assert_eq!(o("SELECT GREATEST(a) FROM t"), "SELECT GREATEST(a) FROM t;");
+}

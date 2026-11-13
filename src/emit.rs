@@ -1146,7 +1146,10 @@ impl<'a> Emitter<'a> {
             Expr::Identifier(i)
                 if i.quote_style.is_none()
                     && self.rewrites_for_sqlite()
-                    && matches!(i.value.to_ascii_uppercase().as_str(), "SYSDATE" | "SYSTIMESTAMP") =>
+                    && matches!(
+                        i.value.to_ascii_uppercase().as_str(),
+                        "SYSDATE" | "SYSTIMESTAMP" | "LOCALTIMESTAMP"
+                    ) =>
             {
                 let out = "datetime('now', 'localtime')".to_string();
                 let what = format!("{} -> datetime('now', 'localtime')", i.value.to_ascii_uppercase());
@@ -1452,8 +1455,98 @@ impl<'a> Emitter<'a> {
                     rewritten(out, &format!("{name} -> group_concat"))
                 })())
             }
+            _ => self.sqlite_rewrite_more(&name, &args),
+        }
+    }
+
+    fn done(&self, what: &str, out: String) -> R {
+        self.note(Severity::Rewritten, what.to_string(), Some(out.clone()));
+        Ok(out)
+    }
+
+    /// The scalar functions with an exact SQLite spelling: GREATEST/LEAST, CHR,
+    /// ASCII, LNNVL, LPAD/RPAD, INSTR with a start, LAST_DAY, TO_NUMBER, and
+    /// TO_CHAR/TO_DATE with date masks SQLite's strftime can reproduce.
+    fn sqlite_rewrite_more(&self, name: &str, args: &[&Expr]) -> Option<R> {
+        match (name, args) {
+            ("GREATEST" | "LEAST", [_, _, ..]) => Some((|| {
+                let a = self.list_refs(args)?;
+                let f = if name == "GREATEST" { "max" } else { "min" };
+                if self.source.is_some_and(|s| s.name() == "postgres") {
+                    self.note(
+                        Severity::Warning,
+                        format!(
+                            "{name} ignores NULL arguments in postgres; {f}() returns NULL if any argument is NULL"
+                        ),
+                        None,
+                    );
+                }
+                self.done(&format!("{name} -> {f}"), format!("{f}({a})"))
+            })()),
+            ("CHR", [n]) => Some(self.expr(n).and_then(|n| self.done("CHR -> char", format!("char({n})")))),
+            ("ASCII", [x]) => Some(self.expr(x).and_then(|x| self.done("ASCII -> unicode", format!("unicode({x})")))),
+            ("LNNVL", [c]) => {
+                Some(self.expr(c).and_then(|c| self.done("LNNVL -> IS NOT TRUE", format!("({c}) IS NOT TRUE"))))
+            }
+            ("TO_NUMBER", [x]) => {
+                Some(self.expr(x).and_then(|x| self.done("TO_NUMBER -> CAST", format!("CAST({x} AS NUMERIC)"))))
+            }
+            ("LAST_DAY", [d]) => Some(self.expr(d).and_then(|d| {
+                self.note(Severity::Warning, "LAST_DAY -> date(): the time of day is dropped", None);
+                self.done("LAST_DAY -> date(...)", format!("date({d}, 'start of month', '+1 month', '-1 day')"))
+            })),
+            ("LPAD" | "RPAD", [x, n]) | ("LPAD" | "RPAD", [x, n, _]) => Some((|| {
+                let (xs, ns) = (self.expr(x)?, self.expr(n)?);
+                let pad = match args.get(2) {
+                    Some(p) => self.expr(p)?,
+                    None => "' '".to_string(),
+                };
+                // enough copies of the pad, cut to the missing length
+                let fill = format!("substr(replace(hex(zeroblob({ns})), '00', {pad}), 1, max({ns} - length({xs}), 0))");
+                let out = if name == "LPAD" {
+                    format!("substr({fill} || {xs}, 1, {ns})")
+                } else {
+                    format!("substr({xs} || {fill}, 1, {ns})")
+                };
+                if !matches!(args.get(2), None | Some(Expr::Value(Value::String(_)))) {
+                    self.note(
+                        Severity::Warning,
+                        format!("{name}: an empty pad gives NULL in oracle, no padding here"),
+                        None,
+                    );
+                }
+                self.done(&format!("{name} -> substr/replace/zeroblob"), out)
+            })()),
+            ("INSTR", [x, sub, Expr::Value(Value::Number(start))]) if start.parse::<u32>().is_ok_and(|n| n > 0) => {
+                Some((|| {
+                    let (xs, subs) = (self.expr(x)?, self.expr(sub)?);
+                    let found = format!("instr(substr({xs}, {start}), {subs})");
+                    let out = format!("CASE WHEN {found} = 0 THEN 0 ELSE {found} + {start} - 1 END");
+                    self.done("INSTR with a start position -> instr(substr(...))", out)
+                })())
+            }
+            ("TO_CHAR", [d, Expr::Value(Value::String(mask))]) => {
+                let fmt = strftime_format(mask)?;
+                Some(
+                    self.expr(d)
+                        .and_then(|d| self.done("TO_CHAR -> strftime", format!("strftime({}, {d})", quote_str(&fmt)))),
+                )
+            }
+            ("TO_DATE", [x, Expr::Value(Value::String(mask))]) => {
+                let f = match mask.to_ascii_uppercase().as_str() {
+                    "YYYY-MM-DD" => "date",
+                    "YYYY-MM-DD HH24:MI:SS" => "datetime",
+                    _ => return None,
+                };
+                Some(self.expr(x).and_then(|x| self.done(&format!("TO_DATE -> {f}"), format!("{f}({x})"))))
+            }
             _ => None,
         }
+    }
+
+    fn list_refs(&self, items: &[&Expr]) -> R {
+        let parts = items.iter().map(|e| self.expr(e)).collect::<Result<Vec<_>, _>>()?;
+        Ok(parts.join(", "))
     }
 
     /// Function calls and keywords are rewritten only when the source is known
@@ -1533,6 +1626,35 @@ impl<'a> Emitter<'a> {
         }
         Ok(out)
     }
+}
+
+/// An Oracle/PostgreSQL date mask as a `strftime` format, or `None` when it
+/// uses anything that has no exact equivalent (month names, `FM`, `AM`, ...).
+fn strftime_format(mask: &str) -> Option<String> {
+    const TOKENS: [(&str, &str); 7] =
+        [("YYYY", "%Y"), ("HH24", "%H"), ("DDD", "%j"), ("MM", "%m"), ("DD", "%d"), ("MI", "%M"), ("SS", "%S")];
+    if !mask.is_ascii() {
+        return None;
+    }
+    let upper = mask.to_ascii_uppercase();
+    let (mut i, mut out) = (0, String::new());
+    while i < mask.len() {
+        let rest = &upper[i..];
+        if let Some((tok, f)) = TOKENS.iter().find(|(t, _)| rest.starts_with(t)) {
+            out.push_str(f);
+            i += tok.len();
+        } else if let Some(quoted) = rest.strip_prefix('"') {
+            let end = quoted.find('"')? + 1;
+            out.push_str(&mask[i + 1..i + end].replace('%', "%%"));
+            i += end + 1;
+        } else if matches!(rest.as_bytes()[0], b'-' | b'/' | b':' | b'.' | b',' | b' ') {
+            out.push_str(&mask[i..=i]);
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 fn quote_str(s: &str) -> String {

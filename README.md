@@ -77,9 +77,10 @@ let text = outline_sql(Postgres, Syntax::Ordered, "SELECT a FROM t WHERE b = 1")
 `transpile` rewrites what can be rewritten safely and returns an error for what cannot:
 pagination (`LIMIT`/`OFFSET` vs `FETCH FIRST`), `MINUS`/`EXCEPT`, `FROM dual`, bind parameters
 (`$1`, `?`, `:name`), data types (`VARCHAR2`/`VARCHAR`, `NUMBER`/`NUMERIC`, ...), `ILIKE`,
-`%` vs `MOD`, booleans, Oracle/PostgreSQL functions SQLite lacks (`NVL`, `NVL2`, `DECODE`,
-`SYSDATE`, `NOW`, `LISTAGG`, `STRING_AGG`, rewritten to `COALESCE`, `CASE`, `datetime('now')` and
-`group_concat`), `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
+`%` vs `MOD`, booleans, Oracle/PostgreSQL functions SQLite lacks, rewritten to SQLite constructs when they have an
+exact equivalent (`NVL`, `NVL2`, `DECODE`, `GREATEST`/`LEAST`, `LPAD`/`RPAD`, `LISTAGG`/`STRING_AGG`,
+`SYSDATE`/`NOW`, `LAST_DAY`, `CHR`, `LNNVL`, `INSTR` with a start, `TO_NUMBER(x)`, and `TO_CHAR`/`TO_DATE`
+with masks `strftime` can reproduce; other masks stay an error), `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
 types and similar constructs error on engines that lack them.
 
 ## Compatibility report

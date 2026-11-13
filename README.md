@@ -180,18 +180,22 @@ CREATE TABLE orders (id INT PRIMARY KEY, user_id INT REFERENCES accounts (id));
 CREATE INDEX ix_o ON orders (user_id);
 ```
 
-Statements that do not parse (PL/SQL blocks, functions, triggers, unsupported syntax) are skipped
-instead of stopping the run: a summary goes to stderr, `-v` lists each one, and they do not affect
-the exit code. In Oracle scripts, SQL*Plus commands (`SET`, `WHENEVER`, a lone `/`), a leading BOM,
-`N'...'` strings and physical clauses (`TABLESPACE`, `PCTFREE`, `COMPRESS ...`, `ROW STORE ...`,
-`USING INDEX ...`, `ENABLE`/`NOVALIDATE`, `LOB (...) STORE AS ...`) are understood; the physical
-clauses are accepted but dropped from the dump. A PL/SQL unit is skipped up to the next line that
-holds only `/`.
+Statements that do not parse are skipped instead of stopping the run: a summary goes to stderr,
+`-v` lists each one, and they do not affect the exit code. In Oracle scripts, SQL*Plus commands
+(`SET`, `WHENEVER`, `DEFINE`, a lone `/`), a leading BOM, UTF-16 and Latin-1 files, `N'...'`
+strings and physical clauses (`TABLESPACE`, `PCTFREE`, `COMPRESS ...`, `ROW STORE ...`,
+`USING INDEX ...`, `ENABLE`/`NOVALIDATE`, `LOB (...) STORE AS ...`, `PARTITION BY ...`) are
+understood; the physical clauses are accepted but dropped from the dump. `ALTER TABLE` clauses
+that are not modeled (`MOVE`, `ENABLE CONSTRAINT`, `LOGGING`, partition maintenance, ...) and
+statements such as `COMMIT`, `GRANT`, `COMMENT ON`, `CALL`, `ALTER VIEW ... COMPILE` or
+`DROP FUNCTION` are accepted and have no effect on the schema.
 
-In an anonymous `BEGIN ... END` / `DECLARE ... END` block, the SQL in `EXECUTE IMMEDIATE '...'`
-strings (also parenthesised, or literals joined with `||`) is extracted and applied in place, as
-if the block ran it unconditionally; the block itself is still counted as skipped. Strings built
-from variables, and anything inside functions, procedures and triggers, are not seen. Extracted
+PL/SQL units (anonymous blocks, functions, procedures, triggers, packages, types) are recognized
+and extend to the next line that holds only `/`, but their bodies are not analyzed; the summary
+counts them. The exception is the SQL in `EXECUTE IMMEDIATE '...'` strings of anonymous
+`BEGIN ... END` / `DECLARE ... END` blocks (also parenthesised, or literals joined with `||`): it
+is extracted and applied in place, as if the block ran it unconditionally. Strings built from
+variables, and anything inside functions, procedures and triggers, are not seen. Extracted
 statements that cannot apply (the table already exists, the column is missing) are usually
 guarded by an `IF`, so they are not errors; `-v` lists them as "not applied".
 
@@ -261,9 +265,14 @@ interchange format.
 
 * Syntax only: no check that tables, columns or types exist.
 * Covered: `SELECT` (CTEs, set operations, joins, subqueries, window functions), `INSERT`
-  (incl. `ON CONFLICT`), `UPDATE`, `DELETE`, `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, `CREATE SEQUENCE`, `CREATE VIEW`, `DROP`.
-* Not covered: PL/SQL and procedural code, `MERGE`, `CONNECT BY`, Oracle `(+)` joins, window frames,
-  `IS DISTINCT FROM`, materialized views, `ALTER` of anything but tables.
+  (incl. `ON CONFLICT`, Oracle `INSERT ALL`), `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`,
+  `CREATE TABLE` (incl. `AS SELECT`), `ALTER TABLE`, `CREATE INDEX`, `CREATE SEQUENCE`,
+  `CREATE VIEW`, `DROP`, and Oracle's `START WITH ... CONNECT BY`.
+* Accepted but not modeled: `COMMIT`, `GRANT`, `COMMENT ON`, `CALL`, `ALTER` of anything but
+  tables, `CREATE` of anything but the above (synonyms, materialized views, ...), and PL/SQL units
+  (their text is kept, their bodies are not parsed).
+* Not covered: Oracle `(+)` joins, window frames, `IS DISTINCT FROM`, and the dialects of other
+  databases (T-SQL `GO`, `[bracketed]` identifiers, ...).
 * The parser is lenient in places (for example `AUTOINCREMENT` is accepted in every dialect).
 * Function catalogs contain names only (no argument types or per-version availability) and
   cover core built-ins; extension functions such as `pg_trgm`'s are *unverified*. The Postgres

@@ -1450,6 +1450,32 @@ impl<'a> Emitter<'a> {
         }
         match (name.as_str(), args.as_slice()) {
             ("SYS_GUID", []) => Some(rewritten("hex(randomblob(16))".into(), "SYS_GUID() -> hex(randomblob(16))")),
+            ("TO_DATE", [Expr::Value(Value::String(v))]) => {
+                // no mask: the session's NLS_DATE_FORMAT, DD-MON-RR unless changed
+                let t = ["DD-MON-RR", "DD-MON-YYYY"].iter().find_map(|m| fold_datetime(v, m))?;
+                self.note(
+                    Severity::Warning,
+                    "TO_DATE without a mask depends on NLS_DATE_FORMAT; read as DD-MON-RR",
+                    None,
+                );
+                Some(rewritten(quote_str(&t), &format!("TO_DATE('{v}') -> '{t}'")))
+            }
+            ("TO_DATE", [Expr::Function(inner), Expr::Value(Value::String(mask))])
+                if matches!(inner.name.0.as_slice(), [n] if n.value.eq_ignore_ascii_case("TO_CHAR"))
+                    && !["HH", "MI", "SS", "FF"].iter().any(|t| mask.to_ascii_uppercase().contains(t)) =>
+            {
+                // TO_DATE(TO_CHAR(x, 'MM/DD/YYYY'), 'MM/DD/YYYY') only drops the time of day
+                match inner.args.as_slice() {
+                    [FunctionArg::Expr(x), FunctionArg::Expr(Expr::Value(Value::String(m2)))]
+                        if m2.eq_ignore_ascii_case(mask) =>
+                    {
+                        Some(self.expr(x).and_then(|x| {
+                            rewritten(format!("date({x})"), "TO_DATE(TO_CHAR(x, mask), mask) -> date(x)")
+                        }))
+                    }
+                    _ => None,
+                }
+            }
             ("SYS_EXTRACT_UTC", [x]) => {
                 let now = matches!(x, Expr::Identifier(i) if i.quote_style.is_none()
                     && ["SYSTIMESTAMP", "CURRENT_TIMESTAMP", "LOCALTIMESTAMP", "SYSDATE"]

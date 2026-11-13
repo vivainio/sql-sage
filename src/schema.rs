@@ -710,20 +710,48 @@ impl Schema {
 
     /// The schema as `CREATE SEQUENCE`, `CREATE TABLE`, `CREATE INDEX` and `CREATE VIEW` statements for `target`, one per line.
     pub fn to_sql(&self, target: DialectKind) -> Result<String, EmitError> {
+        let (sql, skipped) = self.emit(target, false);
+        match skipped.into_iter().next() {
+            Some(e) => Err(e),
+            None => Ok(sql),
+        }
+    }
+
+    /// Like [`Self::to_sql`], but an object `target` cannot represent (a sequence in SQLite, say)
+    /// is left out and reported in the second part instead of failing the whole dump.
+    pub fn to_sql_lossy(&self, target: DialectKind) -> (String, Vec<EmitError>) {
+        let (sql, skipped) = self.emit(target, true);
+        (sql, skipped)
+    }
+
+    fn emit(&self, target: DialectKind, keep_going: bool) -> (String, Vec<EmitError>) {
         let d = target.dialect();
         let mut out = vec![];
+        let mut skipped = vec![];
+        let mut add = |what: String, stmt: Statement| {
+            if !skipped.is_empty() && !keep_going {
+                return;
+            }
+            match stmt.to_sql(d.as_ref()) {
+                Ok(sql) => out.push(format!("{sql};")),
+                Err(mut e) => {
+                    e.message = format!("{what}: {}", e.message);
+                    skipped.push(e);
+                }
+            }
+        };
         for q in &self.sequences {
-            out.push(format!("{};", Statement::CreateSequence(q.clone()).to_sql(d.as_ref())?));
+            add(format!("sequence {}", last(&q.name).value), Statement::CreateSequence(q.clone()));
         }
         for t in &self.tables {
-            out.push(format!("{};", Statement::CreateTable(t.clone()).to_sql(d.as_ref())?));
+            add(format!("table {}", last(&t.name).value), Statement::CreateTable(t.clone()));
         }
         for i in &self.indexes {
-            out.push(format!("{};", Statement::CreateIndex(i.clone()).to_sql(d.as_ref())?));
+            add(format!("index {}", last(&i.name).value), Statement::CreateIndex(i.clone()));
         }
         for v in &self.views {
-            out.push(format!("{};", Statement::CreateView(v.clone()).to_sql(d.as_ref())?));
+            add(format!("view {}", last(&v.name).value), Statement::CreateView(v.clone()));
         }
-        Ok(out.join("\n"))
+        (out.join("\n"), skipped)
     }
 }

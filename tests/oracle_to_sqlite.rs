@@ -84,6 +84,50 @@ fn create_or_replace_view_becomes_drop_and_create() {
 }
 
 #[test]
+fn to_date_without_a_mask_and_round_trips_through_to_char() {
+    assert_eq!(lite("SELECT TO_DATE('01-JAN-1900') FROM dual"), "SELECT '1900-01-01';");
+    assert_eq!(lite("SELECT TO_DATE('15-MAR-21') FROM dual"), "SELECT '2021-03-15';");
+    assert_eq!(
+        lite("CREATE INDEX i ON t (TO_DATE(TO_CHAR(valid_from, 'MM/DD/YYYY'), 'MM/DD/YYYY'))"),
+        "CREATE INDEX i ON t (date(valid_from));"
+    );
+    // with a time of day in the mask the round trip keeps it, so it is not a plain date()
+    assert!(transpile(Oracle, Sqlite, "SELECT TO_DATE(TO_CHAR(d, 'MM/DD/YYYY HH24:MI'), 'MM/DD/YYYY HH24:MI') FROM t")
+        .unwrap()
+        .contains("TO_DATE("));
+}
+
+#[test]
+fn a_derived_schema_can_be_written_for_sqlite() {
+    use sql_sage::schema::Schema;
+    let mut s = Schema::new(Oracle);
+    let applied = s
+        .apply_sql(
+            "CREATE SEQUENCE seq1;
+             CREATE TABLE t (id VARCHAR2(32 CHAR) DEFAULT SYS_GUID() NOT NULL, n NUMBER, d DATE DEFAULT SYSDATE);
+             ALTER TABLE t MODIFY (n NUMBER(10, 2));
+             ALTER TABLE t ADD CONSTRAINT pk_t PRIMARY KEY (id);
+             CREATE INDEX i ON t (n);
+             CREATE OR REPLACE VIEW v AS SELECT id FROM t;",
+        )
+        .unwrap();
+    assert_eq!(applied.errors, vec![]);
+    // The strict form refuses because SQLite has no sequences ...
+    assert!(s.to_sql(Sqlite).is_err());
+    // ... the lossy one leaves the sequence out and says so. The ALTERs are already folded in.
+    let (sql, skipped) = s.to_sql_lossy(Sqlite);
+    assert_eq!(skipped.len(), 1);
+    assert!(skipped[0].message.starts_with("sequence seq1"), "{}", skipped[0].message);
+    assert_eq!(
+        sql,
+        "CREATE TABLE t (id VARCHAR2(32) DEFAULT hex(randomblob(16)) NOT NULL, n NUMBER(10, 2), d DATE DEFAULT datetime('now', 'localtime'), CONSTRAINT pk_t PRIMARY KEY (id));\n\
+         CREATE INDEX i ON t (n);\n\
+         DROP VIEW IF EXISTS v; CREATE VIEW v AS SELECT id FROM t;"
+    );
+    assert!(check_syntax(Sqlite, &sql).is_ok());
+}
+
+#[test]
 fn transaction_control_translates_everywhere() {
     for target in [Sqlite, Postgres] {
         assert_eq!(transpile(Oracle, target, "COMMIT").unwrap(), "COMMIT;");

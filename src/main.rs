@@ -237,9 +237,10 @@ fn run_schema(kind: DialectKind, to: Option<DialectKind>, paths: &[String], verb
             }
         }
     }
-    match schema.to_sql(to.unwrap_or(kind)) {
-        Ok(out) => println!("{out}"),
-        Err(e) => return fail(&format!("cannot translate: {e}")),
+    let (out, skipped) = schema.to_sql_lossy(to.unwrap_or(kind));
+    println!("{out}");
+    for e in &skipped {
+        eprintln!("warning: left out of the output, cannot translate {e}");
     }
     if failed {
         ExitCode::FAILURE

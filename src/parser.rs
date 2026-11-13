@@ -2119,6 +2119,7 @@ impl<'a> Parser<'a> {
         match self.next_token() {
             Token::Number(n) => Ok(Expr::Value(Value::Number(n))),
             Token::SingleQuotedString(s) => Ok(Expr::Value(Value::String(s))),
+            Token::HexString(h) => Ok(Expr::Value(Value::Blob(h))),
             Token::Placeholder(p) => self.parse_placeholder_or_trigger_ref(p),
             Token::Plus => Ok(Expr::UnaryOp { op: UnaryOperator::Plus, expr: Box::new(self.parse_subexpr(60)?) }),
             Token::Minus => Ok(Expr::UnaryOp { op: UnaryOperator::Minus, expr: Box::new(self.parse_subexpr(60)?) }),

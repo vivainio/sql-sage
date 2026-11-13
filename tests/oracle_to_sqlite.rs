@@ -98,6 +98,18 @@ fn to_date_without_a_mask_and_round_trips_through_to_char() {
 }
 
 #[test]
+fn hextoraw_and_case_insensitive_sort_keys() {
+    assert_eq!(
+        lite("CREATE TABLE t (id RAW(16) DEFAULT HEXTORAW('00000000000000000000000000000000') NOT NULL)"),
+        "CREATE TABLE t (id RAW(16) DEFAULT X'00000000000000000000000000000000' NOT NULL);"
+    );
+    assert_eq!(lite("CREATE INDEX i ON t (NLSSORT(name, 'NLS_SORT=BINARY_CI'))"), "CREATE INDEX i ON t (lower(name));");
+    // not a hex literal, or another collation: left as written
+    assert!(transpile(Oracle, Sqlite, "SELECT HEXTORAW(x) FROM t").unwrap().contains("HEXTORAW("));
+    assert!(transpile(Oracle, Sqlite, "SELECT NLSSORT(a, 'NLS_SORT=GERMAN') FROM t").unwrap().contains("NLSSORT("));
+}
+
+#[test]
 fn a_derived_schema_can_be_written_for_sqlite() {
     use sql_sage::schema::Schema;
     let mut s = Schema::new(Oracle);

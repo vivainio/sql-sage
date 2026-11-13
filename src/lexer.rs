@@ -19,6 +19,8 @@ pub enum Token {
     Word(Word),
     Number(String),
     SingleQuotedString(String),
+    /// `X'CAFE'`
+    HexString(String),
     Placeholder(String),
     Comma,
     Period,
@@ -57,6 +59,7 @@ impl fmt::Display for Token {
             },
             Token::Number(n) => f.write_str(n),
             Token::SingleQuotedString(s) => write!(f, "'{}'", s.replace('\'', "''")),
+            Token::HexString(h) => write!(f, "X'{h}'"),
             Token::Placeholder(p) => f.write_str(p),
             Token::Comma => f.write_str(","),
             Token::Period => f.write_str("."),
@@ -387,7 +390,11 @@ impl<'a> Lexer<'a> {
             }
             c if self.dialect.is_identifier_start(c) => {
                 let quote_follows = self.peek_at(1) == Some('\'');
-                if matches!(c, 'n' | 'N') && quote_follows {
+                if matches!(c, 'x' | 'X') && quote_follows && self.dialect.supports_blob_literals() {
+                    self.bump();
+                    self.bump();
+                    Token::HexString(self.read_delimited('\'', true, "unterminated blob literal")?)
+                } else if matches!(c, 'n' | 'N') && quote_follows {
                     // National string literal N'...': read as an ordinary string.
                     self.bump();
                     self.bump();

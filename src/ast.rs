@@ -313,6 +313,8 @@ pub enum LikeKind {
 pub enum Value {
     Number(String),
     String(String),
+    /// `X'CAFE'`: the hex digits of a blob literal.
+    Blob(String),
     Boolean(bool),
     Null,
 }

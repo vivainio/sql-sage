@@ -1090,6 +1090,16 @@ impl<'a> Emitter<'a> {
     pub fn value(&self, v: &Value) -> String {
         match v {
             Value::Number(n) => n.clone(),
+            Value::Blob(h) => {
+                if let Some(t) = self.target.filter(|t| !t.supports_blob_literals()) {
+                    self.note(
+                        Severity::Incompatible,
+                        format!("blob literal X'..' is not supported by {}", t.name()),
+                        Some(format!("X'{h}'")),
+                    );
+                }
+                format!("X'{h}'")
+            }
             Value::String(s) => {
                 if s.is_empty() && self.differs(|d| d.empty_string_is_null()) {
                     let (src, tgt) = self.names();
@@ -1450,6 +1460,17 @@ impl<'a> Emitter<'a> {
         }
         match (name.as_str(), args.as_slice()) {
             ("SYS_GUID", []) => Some(rewritten("hex(randomblob(16))".into(), "SYS_GUID() -> hex(randomblob(16))")),
+            ("HEXTORAW", [Expr::Value(Value::String(h))])
+                if h.len() % 2 == 0 && h.chars().all(|c| c.is_ascii_hexdigit()) =>
+            {
+                Some(rewritten(format!("X'{h}'"), "HEXTORAW('hex') -> X'hex' blob literal"))
+            }
+            ("NLSSORT", [x, Expr::Value(Value::String(opt))]) if opt.eq_ignore_ascii_case("NLS_SORT=BINARY_CI") => {
+                Some(self.expr(x).and_then(|x| {
+                    self.note(Severity::Warning, "NLSSORT(.., BINARY_CI) -> lower(): only ASCII letters fold", None);
+                    rewritten(format!("lower({x})"), "NLSSORT(x, 'NLS_SORT=BINARY_CI') -> lower(x)")
+                }))
+            }
             ("TO_DATE", [Expr::Value(Value::String(v))]) => {
                 // no mask: the session's NLS_DATE_FORMAT, DD-MON-RR unless changed
                 let t = ["DD-MON-RR", "DD-MON-YYYY"].iter().find_map(|m| fold_datetime(v, m))?;

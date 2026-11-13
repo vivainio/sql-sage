@@ -56,6 +56,10 @@ pub trait Dialect: Debug {
     fn supports_q_quote_strings(&self) -> bool {
         false
     }
+    /// `X'CAFE'` blob literals.
+    fn supports_blob_literals(&self) -> bool {
+        false
+    }
     /// Storage and other physical clauses after `CREATE TABLE (...)` / `CREATE INDEX`
     /// (`TABLESPACE`, `PCTFREE`, `COMPRESS`, `USING INDEX`, `ENABLE`, ...) are accepted and ignored.
     fn supports_physical_clauses(&self) -> bool {
@@ -416,6 +420,9 @@ impl Dialect for SqliteDialect {
     }
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
         matches!(ch, '"' | '`' | '[')
+    }
+    fn supports_blob_literals(&self) -> bool {
+        true
     }
     fn supports_dollar_placeholders(&self) -> bool {
         true

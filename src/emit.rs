@@ -452,6 +452,9 @@ impl<'a> Emitter<'a> {
     // --------------------------------------------------------- queries
 
     pub fn query(&self, q: &Query) -> R {
+        if let Some(limited) = self.rownum_as_limit(q) {
+            return self.query(&limited);
+        }
         let mut out = String::new();
         if let Some(w) = &q.with {
             out.push_str(&self.with(w)?);
@@ -463,6 +466,43 @@ impl<'a> Emitter<'a> {
         }
         out.push_str(&self.pagination(q)?);
         Ok(out)
+    }
+
+    /// Oracle's `WHERE ... AND ROWNUM <= n` as a `LIMIT n`, for a target that has one: the query without the ROWNUM
+    /// predicate and with the limit, or `None` when there is nothing to rewrite. Only the `AND`ed predicates of the
+    /// query's own WHERE count (a ROWNUM in a subquery is that subquery's: it is rewritten when the subquery is
+    /// emitted). Oracle numbers the rows before `ORDER BY` and a LIMIT cuts them after it, so a sorted query can
+    /// pick other rows: that is reported as a warning.
+    fn rownum_as_limit(&self, q: &Query) -> Option<Query> {
+        let d = self.target?;
+        if !d.supports_limit() || q.limit.is_some() || q.fetch.is_some() {
+            return None;
+        }
+        let SetExpr::Select(select) = &q.body else { return None };
+        let mut conjuncts = Vec::new();
+        flatten_and(select.selection.as_ref()?, &mut conjuncts);
+        let (at, n) = conjuncts.iter().enumerate().find_map(|(i, c)| rownum_limit(c).map(|n| (i, n)))?;
+        let rest: Vec<Expr> =
+            conjuncts.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, c)| (*c).clone()).collect();
+        let selection = rest.into_iter().reduce(|l, r| Expr::BinaryOp {
+            left: Box::new(l),
+            op: BinaryOperator::And,
+            right: Box::new(r),
+        });
+        let mut limited = q.clone();
+        if let SetExpr::Select(s) = &mut limited.body {
+            s.selection = selection;
+        }
+        limited.limit = Some(Expr::Value(Value::Number(n.to_string())));
+        self.note(Severity::Rewritten, format!("ROWNUM predicate rewritten to LIMIT {n}"), None);
+        if !q.order_by.is_empty() {
+            self.note(
+                Severity::Warning,
+                "Oracle numbers the rows before ORDER BY, LIMIT cuts them after it: a sorted ROWNUM query can return other rows",
+                None,
+            );
+        }
+        Some(limited)
     }
 
     fn fetch_clause(&self, f: &Fetch) -> R {
@@ -1100,5 +1140,47 @@ impl Display for ObjectName {
 impl Display for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(&Emitter::neutral().value(self))
+    }
+}
+
+/// The `AND`ed predicates of a condition.
+fn flatten_and<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+    match e {
+        Expr::BinaryOp { left, op: BinaryOperator::And, right } => {
+            flatten_and(left, out);
+            flatten_and(right, out);
+        }
+        other => out.push(other),
+    }
+}
+
+/// `n` of the predicates `ROWNUM = 1`, `ROWNUM <= n`, `ROWNUM < n` (and the reversed `1 >= ROWNUM`, ...): the number of rows
+/// they let through. `ROWNUM = 2` and the like never match in Oracle and are not a row limit: left alone.
+fn rownum_limit(e: &Expr) -> Option<u64> {
+    let Expr::BinaryOp { left, op, right } = e else { return None };
+    let is_rownum = |x: &Expr| matches!(x, Expr::Identifier(i) if i.quote_style.is_none() && i.value.eq_ignore_ascii_case("ROWNUM"));
+    let number = |x: &Expr| match x {
+        Expr::Value(Value::Number(n)) => n.parse::<u64>().ok(),
+        _ => None,
+    };
+    let (op, n) = if is_rownum(left) {
+        (*op, number(right)?)
+    } else if is_rownum(right) {
+        // `n >= ROWNUM` reads as `ROWNUM <= n`
+        let flipped = match op {
+            BinaryOperator::Eq => BinaryOperator::Eq,
+            BinaryOperator::Gt => BinaryOperator::Lt,
+            BinaryOperator::GtEq => BinaryOperator::LtEq,
+            _ => return None,
+        };
+        (flipped, number(left)?)
+    } else {
+        return None;
+    };
+    match op {
+        BinaryOperator::Eq if n == 1 => Some(1),
+        BinaryOperator::LtEq => Some(n),
+        BinaryOperator::Lt => n.checked_sub(1),
+        _ => None,
     }
 }

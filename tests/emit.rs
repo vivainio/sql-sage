@@ -162,3 +162,35 @@ fn plain_trim_is_an_ordinary_call() {
     assert!(check_syntax(Oracle, "SELECT TRIM(LEADING '0' FROM a) FROM t").is_ok());
     assert!(check_syntax(Oracle, "SELECT TRIM(LEADING '0' a) FROM t").is_err());
 }
+
+#[test]
+fn rownum_becomes_limit() {
+    assert_eq!(t(Oracle, Sqlite, "SELECT a FROM t WHERE x = 1 AND ROWNUM = 1"), "SELECT a FROM t WHERE x = 1 LIMIT 1;");
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT a FROM t WHERE ROWNUM <= 5 AND b = 2"),
+        "SELECT a FROM t WHERE b = 2 LIMIT 5;"
+    );
+    assert_eq!(t(Oracle, Postgres, "SELECT a FROM t WHERE rownum < 3"), "SELECT a FROM t LIMIT 2;");
+    assert_eq!(t(Oracle, Sqlite, "SELECT a FROM t WHERE 10 >= ROWNUM"), "SELECT a FROM t LIMIT 10;");
+    // a ROWNUM of a subquery limits the subquery
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT a FROM (SELECT b AS a FROM u WHERE ROWNUM = 1) WHERE a = 2"),
+        "SELECT a FROM (SELECT b AS a FROM u LIMIT 1) WHERE a = 2;"
+    );
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT 1 FROM dual WHERE EXISTS (SELECT 1 FROM t WHERE ROWNUM = 1)"),
+        "SELECT 1 WHERE EXISTS (SELECT 1 FROM t LIMIT 1);"
+    );
+    // Oracle itself keeps it; ROWNUM = 2 never matches and is not a limit; an OR is not a conjunct
+    assert_eq!(t(Oracle, Oracle, "SELECT a FROM t WHERE ROWNUM = 1"), "SELECT a FROM t WHERE ROWNUM = 1;");
+    assert_eq!(t(Oracle, Sqlite, "SELECT a FROM t WHERE ROWNUM = 2"), "SELECT a FROM t WHERE ROWNUM = 2;");
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT a FROM t WHERE b = 1 OR ROWNUM = 1"),
+        "SELECT a FROM t WHERE b = 1 OR ROWNUM = 1;"
+    );
+    // a query that has a limit already keeps its own
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT a FROM t WHERE ROWNUM <= 5 FETCH FIRST 2 ROWS ONLY"),
+        "SELECT a FROM t WHERE ROWNUM <= 5 LIMIT 2;"
+    );
+}

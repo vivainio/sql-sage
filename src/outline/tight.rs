@@ -58,9 +58,12 @@ impl Outline {
                 }
                 s
             }
-            Statement::CreateSequence(_) | Statement::CreateView(_) | Statement::AlterTable(_) | Statement::Drop(_) => {
-                self.statement(s)
-            }
+            Statement::CreateSequence(_)
+            | Statement::CreateView(_)
+            | Statement::AlterTable(_)
+            | Statement::Truncate(_)
+            | Statement::Other(_)
+            | Statement::Drop(_) => self.statement(s),
         }
     }
 

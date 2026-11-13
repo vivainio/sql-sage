@@ -56,7 +56,7 @@ impl fmt::Display for Token {
                 None => f.write_str(&w.value),
             },
             Token::Number(n) => f.write_str(n),
-            Token::SingleQuotedString(s) => write!(f, "'{s}'"),
+            Token::SingleQuotedString(s) => write!(f, "'{}'", s.replace('\'', "''")),
             Token::Placeholder(p) => f.write_str(p),
             Token::Comma => f.write_str(","),
             Token::Period => f.write_str("."),

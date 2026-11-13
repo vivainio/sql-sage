@@ -30,6 +30,8 @@ pub enum StatementKind {
     CreateSequence,
     CreateView,
     AlterTable,
+    Truncate,
+    Other,
     DropTable,
     DropView,
     DropIndex,
@@ -48,6 +50,8 @@ impl fmt::Display for StatementKind {
             StatementKind::CreateSequence => "create_sequence",
             StatementKind::CreateView => "create_view",
             StatementKind::AlterTable => "alter_table",
+            StatementKind::Truncate => "truncate",
+            StatementKind::Other => "other",
             StatementKind::DropTable => "drop_table",
             StatementKind::DropView => "drop_view",
             StatementKind::DropIndex => "drop_index",
@@ -424,6 +428,13 @@ impl Collector {
                 }
                 StatementKind::AlterTable
             }
+            Statement::Truncate(t) => {
+                for n in &t.tables {
+                    self.table(n, Access::Delete);
+                }
+                StatementKind::Truncate
+            }
+            Statement::Other(_) => StatementKind::Other,
             Statement::Drop(d) => {
                 for n in &d.names {
                     self.table(n, Access::Drop);

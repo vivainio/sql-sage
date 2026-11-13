@@ -69,9 +69,10 @@ fn script_with_sqlplus_commands_storage_clauses_and_plsql() {
     let mut s = Schema::new(Oracle);
     let applied = s.apply_sql(SCRIPT).unwrap();
     assert_eq!(applied.errors, vec![]);
-    // The function and the anonymous block are not understood; nothing else is skipped.
-    let skipped: Vec<_> = applied.skipped.iter().map(|e| e.location.clone().unwrap().line).collect();
-    assert_eq!(skipped, [27, 36]);
+    // The function and the anonymous block are recognized but not analyzed; nothing is skipped.
+    assert_eq!(applied.skipped, vec![]);
+    let units: Vec<_> = applied.plsql.iter().map(|e| e.location.clone().unwrap().line).collect();
+    assert_eq!(units, [27, 36]);
     assert_eq!(
         s.to_sql(Oracle).unwrap(),
         "CREATE SEQUENCE order_seq START WITH 1 INCREMENT BY 1 MINVALUE 0 NOCACHE;\n\
@@ -163,7 +164,7 @@ fn unparseable_statements_are_skipped_not_fatal() {
         .apply_sql(
             "CREATE TABLE a (x int);
              CREATE TABLE b (x int) FROBNICATE;
-             CREATE MATERIALIZED VIEW m AS SELECT 1;
+             FROBNICATE m;
              CREATE TABLE c (x int);",
         )
         .unwrap();
@@ -174,7 +175,7 @@ fn unparseable_statements_are_skipped_not_fatal() {
 }
 
 #[test]
-fn plsql_units_are_skipped_up_to_the_slash_line() {
+fn plsql_units_extend_to_the_slash_line() {
     let mut s = Schema::new(Oracle);
     let applied = s
         .apply_sql(
@@ -188,7 +189,8 @@ fn plsql_units_are_skipped_up_to_the_slash_line() {
              CREATE TABLE b (x NUMBER);",
         )
         .unwrap();
-    assert_eq!(applied.skipped.len(), 1);
+    assert_eq!(applied.skipped, vec![]);
+    assert_eq!(applied.plsql.len(), 1);
     assert_eq!(s.tables().len(), 2);
 }
 
@@ -211,8 +213,9 @@ fn execute_immediate_strings_in_anonymous_blocks_are_applied() {
         .unwrap();
     assert_eq!(applied.errors, vec![]);
     assert_eq!(applied.dynamic_errors, vec![]);
-    // The block itself is still reported as not understood.
-    assert_eq!(applied.skipped.len(), 1);
+    // The block itself is recognized but not analyzed.
+    assert_eq!(applied.skipped, vec![]);
+    assert_eq!(applied.plsql.len(), 1);
     assert_eq!(s.to_sql(Oracle).unwrap(), "CREATE TABLE a (x NUMBER, y NUMBER);\nCREATE INDEX i ON a (y);");
 }
 
@@ -233,8 +236,8 @@ fn dynamic_statements_that_cannot_apply_are_not_errors() {
     assert_eq!(applied.errors, vec![]);
     let msgs: Vec<_> = applied.dynamic_errors.iter().map(|e| e.message.as_str()).collect();
     assert_eq!(msgs, ["table a already exists", "table nope does not exist"]);
-    assert_eq!(applied.skipped.len(), 2); // the block, and the string that is not SQL
-    assert!(applied.skipped[1].message.starts_with("in EXECUTE IMMEDIATE: "));
+    assert_eq!(applied.skipped.len(), 1); // the string that is not SQL
+    assert!(applied.skipped[0].message.starts_with("in EXECUTE IMMEDIATE: "));
     assert_eq!(s.tables().len(), 1);
 }
 
@@ -319,4 +322,54 @@ fn execute_immediate_inside_functions_and_procedures_is_not_applied() {
     )
     .unwrap();
     assert!(s.tables().is_empty());
+}
+
+#[test]
+fn statements_that_are_accepted_but_not_modeled() {
+    for sql in [
+        "COMMIT",
+        "ROLLBACK",
+        "GRANT SELECT, INSERT ON t TO some_role",
+        "COMMENT ON COLUMN t.a IS 'it''s a column'",
+        "ALTER VIEW v COMPILE",
+        "ALTER TRIGGER trg DISABLE",
+        "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD'",
+        "DROP FUNCTION f",
+        "DROP TRIGGER trg",
+        "CREATE PUBLIC SYNONYM syn FOR other.t",
+        "CREATE MATERIALIZED VIEW mv AS SELECT 1 FROM dual",
+        "CALL some_proc('a', 1)",
+        "ANALYZE TABLE t COMPUTE STATISTICS",
+        "EXEC some_proc",
+    ] {
+        assert!(check_syntax(Oracle, sql).is_ok(), "{sql}");
+        // Reprinted as written, with normalized spacing.
+        let out = transpile(Oracle, Oracle, sql).unwrap();
+        assert!(check_syntax(Oracle, &out).is_ok(), "{out}");
+    }
+    assert_eq!(
+        transpile(Oracle, Oracle, "COMMENT ON COLUMN t.a IS 'it''s'").unwrap(),
+        "COMMENT ON COLUMN t.a IS 'it''s';"
+    );
+    // They cannot be translated, but they do not stop a schema from being derived.
+    assert!(transpile(Oracle, Postgres, "GRANT SELECT ON t TO r").is_err());
+    assert_eq!(
+        derive(Oracle, "CREATE TABLE t (a NUMBER); GRANT SELECT ON t TO r; COMMIT;"),
+        "CREATE TABLE t (a NUMBER);"
+    );
+    // Typos are still errors.
+    assert!(check_syntax(Oracle, "FROBNICATE t").is_err());
+    assert!(check_syntax(Postgres, "SELECT 1; GRANT SELECT ON t TO r").is_ok());
+}
+
+#[test]
+fn truncate_and_rename() {
+    assert_eq!(transpile(Oracle, Postgres, "TRUNCATE TABLE a, b DROP STORAGE").unwrap(), "TRUNCATE TABLE a, b;");
+    assert_eq!(transpile(Postgres, Postgres, "TRUNCATE a CASCADE").unwrap(), "TRUNCATE TABLE a;");
+    let fp = sql_sage::fingerprint_sql(Oracle, "TRUNCATE TABLE a").unwrap();
+    assert_eq!(fp[0].to_string(), "truncate | a:delete | - | -");
+    assert_eq!(
+        derive(Oracle, "CREATE TABLE old_name (a NUMBER); RENAME old_name TO new_name; TRUNCATE TABLE new_name;"),
+        "CREATE TABLE new_name (a NUMBER);"
+    );
 }

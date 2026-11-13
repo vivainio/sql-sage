@@ -33,6 +33,10 @@ impl Outline {
             Statement::CreateSequence(c) => self.create_sequence(c),
             Statement::CreateView(c) => self.create_view(c),
             Statement::AlterTable(a) => self.alter_table(a),
+            Statement::Truncate(t) => {
+                format!("truncate {}", t.tables.iter().map(|n| self.name(n)).collect::<Vec<_>>().join(", "))
+            }
+            Statement::Other(o) => o.text.clone(),
             Statement::Drop(d) => self.drop_stmt(d),
         }
     }

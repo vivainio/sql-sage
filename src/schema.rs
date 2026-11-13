@@ -71,6 +71,9 @@ pub struct Applied {
     /// are usually guarded (`IF ... THEN`) and are assumed to run, so these are likely to be
     /// guards that would have skipped them, not mistakes.
     pub dynamic_errors: Vec<SchemaError>,
+    /// PL/SQL units (anonymous blocks, functions, procedures, triggers, packages, types). They
+    /// are accepted but not analyzed, apart from SQL in `EXECUTE IMMEDIATE` strings of blocks.
+    pub plsql: Vec<SchemaError>,
 }
 
 fn key(fold: IdentifierFold, id: &Ident) -> String {
@@ -164,6 +167,17 @@ impl Schema {
             applied.skipped.push(SchemaError { message: e.to_string(), location: Some(at) });
         }
         for s in parsed.statements {
+            if let Statement::Other(o) = &s.statement {
+                let unit = ["FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE", "TYPE"]
+                    .iter()
+                    .any(|k| o.kind == format!("CREATE {k}"));
+                if unit || o.kind == "PL/SQL BLOCK" {
+                    applied.plsql.push(SchemaError {
+                        message: format!("{} not analyzed", o.kind),
+                        location: Some(s.location.clone()),
+                    });
+                }
+            }
             if let Err(mut e) = self.apply(&s.statement) {
                 e.location = Some(s.location);
                 if s.dynamic {
@@ -185,7 +199,12 @@ impl Schema {
             Statement::CreateView(c) => self.create_view(c),
             Statement::AlterTable(a) => self.alter_table(a),
             Statement::Drop(d) => self.drop(d),
-            Statement::Query(_) | Statement::Insert(_) | Statement::Update(_) | Statement::Delete(_) => Ok(()),
+            Statement::Query(_)
+            | Statement::Insert(_)
+            | Statement::Update(_)
+            | Statement::Delete(_)
+            | Statement::Truncate(_)
+            | Statement::Other(_) => Ok(()),
         }
     }
 

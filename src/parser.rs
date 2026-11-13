@@ -233,12 +233,21 @@ impl<'a> Parser<'a> {
             match result {
                 Ok(statement) => out.statements.push(LenientStatement { statement, location: at, dynamic: false }),
                 Err(e) => {
-                    out.skipped.push((at, e));
                     self.index = start;
-                    let block = self.peek_keyword("DECLARE") || self.peek_keyword("BEGIN");
-                    self.recover();
-                    if block {
-                        self.extract_dynamic_sql(start, self.index, &mut out);
+                    match self.plsql_kind() {
+                        Some(kind) => {
+                            self.recover();
+                            let text = self.tokens_text(start, self.index);
+                            let statement = Statement::Other(Other { kind: kind.clone(), text });
+                            out.statements.push(LenientStatement { statement, location: at, dynamic: false });
+                            if kind == "PL/SQL BLOCK" {
+                                self.extract_dynamic_sql(start, self.index, &mut out);
+                            }
+                        }
+                        None => {
+                            out.skipped.push((at, e));
+                            self.recover();
+                        }
                     }
                 }
             }
@@ -325,16 +334,27 @@ impl<'a> Parser<'a> {
     }
 
     /// Moves past the statement that starts at the current token and failed to parse.
+    /// If the statement at the current token is a PL/SQL unit (an anonymous block, or a stored
+    /// function, procedure, trigger, package or type), its kind.
+    fn plsql_kind(&self) -> Option<String> {
+        if self.peek_keyword("DECLARE") || self.peek_keyword("BEGIN") {
+            return Some("PL/SQL BLOCK".into());
+        }
+        if !self.peek_keyword("CREATE") {
+            return None;
+        }
+        let mut i = 1;
+        while ["OR", "REPLACE", "EDITIONABLE", "NONEDITIONABLE"].iter().any(|k| self.peek_nth_keyword(i, k)) {
+            i += 1;
+        }
+        ["FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE", "TYPE"]
+            .iter()
+            .find(|k| self.peek_nth_keyword(i, k))
+            .map(|k| format!("CREATE {k}"))
+    }
+
     fn recover(&mut self) {
-        let plsql = self.peek_keyword("DECLARE")
-            || self.peek_keyword("BEGIN")
-            || (self.peek_keyword("CREATE") && {
-                let mut i = 1;
-                while ["OR", "REPLACE", "EDITIONABLE", "NONEDITIONABLE"].iter().any(|k| self.peek_nth_keyword(i, k)) {
-                    i += 1;
-                }
-                ["FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE", "TYPE"].iter().any(|k| self.peek_nth_keyword(i, k))
-            });
+        let plsql = self.plsql_kind().is_some();
         self.index += 1;
         loop {
             match self.peek_token() {
@@ -362,15 +382,132 @@ impl<'a> Parser<'a> {
             self.parse_update()
         } else if self.peek_keyword("DELETE") {
             self.parse_delete()
-        } else if self.peek_keyword("CREATE") {
+        } else if self.peek_keyword("CREATE") && !self.is_opaque_start() {
             self.parse_create()
-        } else if self.peek_keyword("ALTER") {
+        } else if self.peek_keyword("ALTER") && self.peek_nth_keyword(1, "TABLE") {
             self.parse_alter_table()
-        } else if self.peek_keyword("DROP") {
+        } else if self.peek_keyword("TRUNCATE") {
+            self.parse_truncate()
+        } else if self.peek_keyword("RENAME") {
+            self.parse_rename()
+        } else if self.peek_keyword("DROP")
+            && ["TABLE", "VIEW", "INDEX", "SEQUENCE"].iter().any(|k| self.peek_nth_keyword(1, k))
+        {
             self.parse_drop()
+        } else if self.is_opaque_start() {
+            self.parse_opaque()
         } else {
             self.expected("a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER or DROP)")
         }
+    }
+
+    fn parse_truncate(&mut self) -> Result<Statement> {
+        self.expect_keyword("TRUNCATE")?;
+        self.parse_keyword("TABLE");
+        let tables = self.parse_comma_separated(Self::parse_object_name)?;
+        // Storage and identity options: DROP STORAGE, CASCADE, RESTART IDENTITY, ...
+        while let Token::Word(w) = self.peek_token() {
+            if w.quote.is_some() || self.peek_keyword("ON") {
+                break;
+            }
+            self.index += 1;
+        }
+        Ok(Statement::Truncate(Truncate { tables }))
+    }
+
+    /// Oracle `RENAME old TO new` (tables), as `ALTER TABLE old RENAME TO new`.
+    fn parse_rename(&mut self) -> Result<Statement> {
+        self.expect_keyword("RENAME")?;
+        let name = self.parse_object_name()?;
+        self.expect_keyword("TO")?;
+        let new = self.parse_ident()?;
+        Ok(Statement::AlterTable(AlterTable { if_exists: false, name, actions: vec![AlterAction::RenameTable(new)] }))
+    }
+
+    /// Does the statement start with something that is accepted without being modeled?
+    fn is_opaque_start(&self) -> bool {
+        let Token::Word(w) = self.peek_token() else { return false };
+        if w.quote.is_some() {
+            return false;
+        }
+        match w.value.to_ascii_uppercase().as_str() {
+            "COMMIT" | "ROLLBACK" | "SAVEPOINT" | "GRANT" | "REVOKE" | "COMMENT" | "CALL" | "ANALYZE" | "LOCK"
+            | "AUDIT" | "NOAUDIT" | "EXEC" | "VACUUM" | "PRAGMA" | "REINDEX" | "ATTACH" | "DETACH" | "SHOW"
+            | "ALTER" | "DROP" => true,
+            "EXECUTE" => !self.peek_nth_keyword(1, "IMMEDIATE"),
+            "SET" => !self.dialect.supports_sqlplus_commands(),
+            "CREATE" => {
+                let mut i = 1;
+                while [
+                    "OR",
+                    "REPLACE",
+                    "FORCE",
+                    "EDITIONABLE",
+                    "NONEDITIONABLE",
+                    "PUBLIC",
+                    "UNIQUE",
+                    "GLOBAL",
+                    "TEMP",
+                    "TEMPORARY",
+                ]
+                .iter()
+                .any(|k| self.peek_nth_keyword(i, k))
+                {
+                    i += 1;
+                }
+                // Tables, indexes, sequences and views are modeled; PL/SQL units have bodies.
+                !["TABLE", "INDEX", "SEQUENCE", "VIEW", "FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE", "TYPE"]
+                    .iter()
+                    .any(|k| self.peek_nth_keyword(i, k))
+                    && matches!(self.peek_nth(i), Token::Word(_))
+            }
+            _ => false,
+        }
+    }
+
+    /// Consumes the rest of the statement (up to a `;` outside parentheses) as an [`Other`].
+    fn parse_opaque(&mut self) -> Result<Statement> {
+        let start = self.index;
+        let first = self.tokens[start].token.to_string().to_ascii_uppercase();
+        let kind = match (first.as_str(), self.tokens.get(start + 1).map(|t| &t.token)) {
+            ("ALTER" | "DROP" | "CREATE", Some(Token::Word(w))) => format!("{first} {}", w.value.to_ascii_uppercase()),
+            _ => first,
+        };
+        let mut depth = 0usize;
+        loop {
+            match self.peek_token() {
+                Token::Eof => break,
+                Token::Semicolon if depth == 0 => break,
+                Token::LParen => depth += 1,
+                Token::RParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            self.index += 1;
+        }
+        Ok(Statement::Other(Other { kind, text: self.tokens_text(start, self.index) }))
+    }
+
+    /// The tokens between two indexes as SQL text (spacing is normalized).
+    fn tokens_text(&self, start: usize, end: usize) -> String {
+        let mut out = String::new();
+        let mut prev: Option<&Token> = None;
+        for t in &self.tokens[start..end.min(self.tokens.len())] {
+            let t = &t.token;
+            if *t == Token::Eof {
+                break;
+            }
+            let glue_before = matches!(
+                t,
+                Token::Comma | Token::RParen | Token::Period | Token::Semicolon | Token::RBracket | Token::DoubleColon
+            );
+            let glue_after = matches!(prev, Some(Token::LParen | Token::Period | Token::LBracket | Token::DoubleColon));
+            if prev.is_some() && !glue_before && !glue_after {
+                out.push(' ');
+            }
+            out.push_str(&t.to_string());
+            prev = Some(t);
+        }
+        out
     }
 
     fn parse_returning(&mut self) -> Result<Vec<SelectItem>> {
@@ -617,6 +754,7 @@ impl<'a> Parser<'a> {
             || self.parse_keyword("TEMPORARY")
             || self.parse_keyword("TEMP");
         let unique = self.parse_keyword("UNIQUE");
+        let _ = self.parse_keyword("BITMAP");
         if self.parse_keyword("VIEW") {
             if temporary || unique {
                 return self.error("TEMPORARY and UNIQUE are not valid before VIEW");

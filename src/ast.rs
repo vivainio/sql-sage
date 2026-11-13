@@ -23,7 +23,11 @@ pub enum Statement {
     CreateSequence(CreateSequence),
     CreateView(CreateView),
     AlterTable(AlterTable),
+    Truncate(Truncate),
     Drop(Drop),
+    /// A statement that is accepted but not modeled (`COMMIT`, `GRANT`, `ALTER VIEW ... COMPILE`,
+    /// a PL/SQL block, ...). Its text is kept as written.
+    Other(Other),
 }
 
 // ---------------------------------------------------------------- queries
@@ -396,6 +400,18 @@ pub enum TableConstraintKind {
     Unique(Vec<Ident>),
     ForeignKey { columns: Vec<Ident>, reference: ForeignKeyRef },
     Check(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Truncate {
+    pub tables: Vec<ObjectName>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Other {
+    /// The leading keywords, upper-cased: `COMMIT`, `ALTER VIEW`, `PL/SQL BLOCK`, ...
+    pub kind: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

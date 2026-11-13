@@ -225,6 +225,18 @@ impl<'a> Emitter<'a> {
             Statement::CreateSequence(c) => self.create_sequence(c),
             Statement::CreateView(c) => self.create_view(c),
             Statement::AlterTable(a) => self.alter_table(a),
+            Statement::Truncate(t) => Ok(format!(
+                "TRUNCATE TABLE {}",
+                t.tables.iter().map(|n| self.object_name(n)).collect::<Vec<_>>().join(", ")
+            )),
+            Statement::Other(o) => {
+                if let (Some(s), Some(t)) = (self.source, self.target) {
+                    if s.name() != t.name() {
+                        self.fail(format!("{} statements cannot be translated", o.kind), None)?;
+                    }
+                }
+                Ok(o.text.clone())
+            }
             Statement::Drop(d) => self.drop_stmt(d),
         }
     }

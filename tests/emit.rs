@@ -145,7 +145,7 @@ fn trim_with_side_or_characters() {
     // the operands are translated too, and may hold calls and nested trims
     assert_eq!(
         t(Oracle, Sqlite, "SELECT TRIM(LEADING '0' FROM TRIM(NVL(a, ' '))) FROM t"),
-        "SELECT LTRIM(TRIM(NVL(a, ' ')), '0') FROM t;"
+        "SELECT LTRIM(TRIM(COALESCE(a, ' ')), '0') FROM t;"
     );
     // other targets keep the standard spelling
     assert_eq!(
@@ -193,4 +193,38 @@ fn rownum_becomes_limit() {
         t(Oracle, Sqlite, "SELECT a FROM t WHERE ROWNUM <= 5 FETCH FIRST 2 ROWS ONLY"),
         "SELECT a FROM t WHERE ROWNUM <= 5 LIMIT 2;"
     );
+}
+
+#[test]
+fn oracle_functions_become_sqlite_constructs() {
+    assert_eq!(t(Oracle, Sqlite, "SELECT NVL(a, 0) FROM t"), "SELECT COALESCE(a, 0) FROM t;");
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT NVL2(a, 'y', 'n') FROM t"),
+        "SELECT CASE WHEN a IS NOT NULL THEN 'y' ELSE 'n' END FROM t;"
+    );
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT DECODE(a, 1, 'x', 2, 'z', 'o') FROM t"),
+        "SELECT CASE a WHEN 1 THEN 'x' WHEN 2 THEN 'z' ELSE 'o' END FROM t;"
+    );
+    // DECODE matches NULL with NULL
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT DECODE(a, NULL, 'n', 'o') FROM t"),
+        "SELECT CASE WHEN a IS NULL THEN 'n' ELSE 'o' END FROM t;"
+    );
+    assert_eq!(t(Oracle, Sqlite, "SELECT SYSDATE FROM dual"), "SELECT datetime('now', 'localtime');");
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT LISTAGG(n, ', ') WITHIN GROUP (ORDER BY n) FROM t"),
+        "SELECT group_concat(n, ', ' ORDER BY n) FROM t;"
+    );
+    // Oracle's default separator is empty, SQLite's is a comma
+    assert_eq!(
+        t(Oracle, Sqlite, "SELECT LISTAGG(n) WITHIN GROUP (ORDER BY n) FROM t"),
+        "SELECT group_concat(n, '' ORDER BY n) FROM t;"
+    );
+    assert_eq!(
+        t(Postgres, Sqlite, "SELECT STRING_AGG(n, ',' ORDER BY n), NOW() FROM t"),
+        "SELECT group_concat(n, ',' ORDER BY n), datetime('now') FROM t;"
+    );
+    // other targets are untouched
+    assert_eq!(t(Oracle, Postgres, "SELECT NVL(a, 0) FROM t"), "SELECT NVL(a, 0) FROM t;");
 }

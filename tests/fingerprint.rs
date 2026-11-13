@@ -105,21 +105,24 @@ fn compat_code() {
     // rewrites and warnings do not reduce compatibility
     assert_eq!(code(Postgres, "SELECT a::int, a ILIKE 'x' FROM t"), "ora,pg,lite");
     // engine-specific functions / syntax narrow it
-    assert_eq!(code(Oracle, "SELECT NVL(a, 0) FROM t"), "ora");
-    assert_eq!(code(Postgres, "SELECT now()"), "pg");
+    assert_eq!(code(Oracle, "SELECT NVL(a, 0) FROM t"), "ora,lite");
+    assert_eq!(code(Postgres, "SELECT now()"), "pg,lite");
     assert_eq!(code(Postgres, "INSERT INTO t VALUES (1) RETURNING id"), "pg,lite");
     assert_eq!(code(Postgres, "SELECT data->>'k' FROM t"), "pg,lite");
     assert_eq!(code(Sqlite, "SELECT a GLOB 'x*' FROM t"), "lite");
     // a function the *source* dialect lacks is not claimed as compatible with it
-    assert_eq!(code(Postgres, "SELECT NVL(a, 0) FROM t"), "ora");
-    // nothing fits
-    assert_eq!(code(Postgres, "SELECT a FROM t GROUP BY a HAVING sysdate > 1 AND now() > 1"), "-");
+    assert_eq!(code(Postgres, "SELECT NVL(a, 0) FROM t"), "ora,lite");
+    // nothing fits (ratio_to_report is Oracle-only, pg_sleep PostgreSQL-only)
+    assert_eq!(
+        code(Postgres, "SELECT a FROM t GROUP BY a HAVING ratio_to_report(a) OVER () > 1 AND pg_sleep(1) > 1"),
+        "-"
+    );
     // catalogs: initcap exists in Oracle and Postgres only
     assert_eq!(code(Postgres, "SELECT initcap(a), lpad(a, 5) FROM t"), "ora,pg");
     assert_eq!(code(Postgres, "SELECT string_agg(a, ',') FROM t"), "pg,lite");
     assert_eq!(code(Oracle, "SELECT ratio_to_report(a) OVER () FROM t"), "ora");
     // same name, different meaning
-    assert_eq!(code(Oracle, "SELECT DECODE(a, 1, 'x', 'y') FROM t"), "ora");
+    assert_eq!(code(Oracle, "SELECT DECODE(a, 1, 'x', 'y') FROM t"), "ora,lite");
 }
 
 #[test]
@@ -127,7 +130,7 @@ fn unverifiable_functions_get_a_question_mark() {
     // user-defined or extension functions: sure for the source dialect, unverified elsewhere
     assert_eq!(code(Postgres, "SELECT my_udf(a) FROM t"), "ora?,pg,lite?");
     assert_eq!(code(Postgres, "SELECT similarity(a, b) FROM t"), "ora?,pg,lite?");
-    assert_eq!(code(Oracle, "SELECT my_udf(a), nvl(a, 0) FROM t"), "ora");
+    assert_eq!(code(Oracle, "SELECT my_udf(a), nvl(a, 0) FROM t"), "ora,lite?");
     assert_eq!(code(Sqlite, "SELECT my_udf(a) FROM t WHERE a GLOB 'x*'"), "lite");
     // schema-qualified calls are user objects: ignored
     assert_eq!(code(Postgres, "SELECT app.helper(a) FROM t"), "ora,pg,lite");

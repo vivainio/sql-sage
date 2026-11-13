@@ -77,7 +77,9 @@ let text = outline_sql(Postgres, Syntax::Ordered, "SELECT a FROM t WHERE b = 1")
 `transpile` rewrites what can be rewritten safely and returns an error for what cannot:
 pagination (`LIMIT`/`OFFSET` vs `FETCH FIRST`), `MINUS`/`EXCEPT`, `FROM dual`, bind parameters
 (`$1`, `?`, `:name`), data types (`VARCHAR2`/`VARCHAR`, `NUMBER`/`NUMERIC`, ...), `ILIKE`,
-`%` vs `MOD`, booleans, `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
+`%` vs `MOD`, booleans, Oracle/PostgreSQL functions SQLite lacks (`NVL`, `NVL2`, `DECODE`,
+`SYSDATE`, `NOW`, `LISTAGG`, `STRING_AGG`, rewritten to `COALESCE`, `CASE`, `datetime('now')` and
+`group_concat`), `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
 types and similar constructs error on engines that lack them.
 
 ## Compatibility report
@@ -157,7 +159,7 @@ writes to a table.
 
 The bracketed code lists the dialects the statement runs on **without manual changes**:
 `ora`, `pg`, `lite` (for example `[ora,pg,lite]` for portable SQL, `[pg,lite]` for
-`RETURNING`, `[ora]` for `NVL`, `-` when none fit). A `?` means nothing is known to be wrong
+`RETURNING`, `[ora]` for `RATIO_TO_REPORT`, `-` when none fit). A `?` means nothing is known to be wrong
 but the statement calls functions that cannot be verified there (`[ora?,pg,lite?]` for a
 user-defined function written for Postgres). It uses the same analysis as `--compat` against
 every dialect, the source one included. Warnings and automatic rewrites do not reduce

@@ -1143,6 +1143,16 @@ impl<'a> Emitter<'a> {
 
     pub fn expr(&self, e: &Expr) -> R {
         Ok(match e {
+            Expr::Identifier(i)
+                if i.quote_style.is_none()
+                    && self.rewrites_for_sqlite()
+                    && matches!(i.value.to_ascii_uppercase().as_str(), "SYSDATE" | "SYSTIMESTAMP") =>
+            {
+                let out = "datetime('now', 'localtime')".to_string();
+                let what = format!("{} -> datetime('now', 'localtime')", i.value.to_ascii_uppercase());
+                self.note(Severity::Rewritten, what, Some(out.clone()));
+                out
+            }
             Expr::Identifier(i) => {
                 if let (true, Some(d), None) = (self.collect, self.target, i.quote_style) {
                     if let Some(hint) = d.function_hint(&i.value.to_ascii_uppercase()) {
@@ -1379,7 +1389,120 @@ impl<'a> Emitter<'a> {
         Ok(out)
     }
 
+    /// Oracle and PostgreSQL functions that SQLite lacks but can express with
+    /// its own constructs. `None` means "no rewrite, emit the call as written".
+    fn sqlite_rewrite(&self, f: &Function) -> Option<R> {
+        if !self.rewrites_for_sqlite() || f.over.is_some() {
+            return None;
+        }
+        let [name] = f.name.0.as_slice() else { return None };
+        if name.quote_style.is_some() {
+            return None;
+        }
+        let name = name.value.to_ascii_uppercase();
+        let args: Vec<&Expr> = f
+            .args
+            .iter()
+            .map(|a| match a {
+                FunctionArg::Expr(e) => Some(e),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        let rewritten = |out: String, what: &str| {
+            self.note(Severity::Rewritten, what.to_string(), Some(out.clone()));
+            Ok(out)
+        };
+        match (name.as_str(), args.as_slice()) {
+            ("NVL", [a, b]) if !f.distinct => Some((|| {
+                let out = format!("COALESCE({}, {})", self.expr(a)?, self.expr(b)?);
+                rewritten(out, "NVL -> COALESCE")
+            })()),
+            ("NVL2", [x, a, b]) if !f.distinct => Some((|| {
+                let out = format!(
+                    "CASE WHEN {} IS NOT NULL THEN {} ELSE {} END",
+                    self.expr(x)?,
+                    self.expr(a)?,
+                    self.expr(b)?
+                );
+                rewritten(out, "NVL2 -> CASE WHEN ... IS NOT NULL")
+            })()),
+            ("DECODE", [x, rest @ ..]) if rest.len() >= 2 && !f.distinct => Some(self.decode_as_case(x, rest)),
+            ("NOW", []) => Some(rewritten("datetime('now')".into(), "NOW() -> datetime('now')")),
+            ("LISTAGG" | "STRING_AGG", [x, sep @ ..]) if sep.len() <= 1 => {
+                // group_concat(DISTINCT x) takes no separator argument
+                if f.distinct && (sep.len() == 1 || name == "LISTAGG") {
+                    return None;
+                }
+                Some((|| {
+                    let order = if name == "LISTAGG" { &f.within_group } else { &f.order_by };
+                    let mut parts = vec![self.expr(x)?];
+                    match sep {
+                        [s] => parts.push(self.expr(s)?),
+                        // Oracle joins with nothing by default, SQLite with a comma
+                        _ if name == "LISTAGG" => parts.push("''".into()),
+                        _ => {}
+                    }
+                    let mut out =
+                        format!("group_concat({}{}", if f.distinct { "DISTINCT " } else { "" }, parts.join(", "));
+                    if !order.is_empty() {
+                        out.push_str(&format!(" ORDER BY {}", self.list(order, Self::order_by_expr)?));
+                        self.note(Severity::Warning, "ORDER BY inside group_concat needs SQLite 3.44 or later", None);
+                    }
+                    out.push(')');
+                    rewritten(out, &format!("{name} -> group_concat"))
+                })())
+            }
+            _ => None,
+        }
+    }
+
+    /// Function calls and keywords are rewritten only when the source is known
+    /// not to be SQLite (or unknown) and the target is SQLite.
+    fn rewrites_for_sqlite(&self) -> bool {
+        self.target.is_some_and(|t| t.name() == "sqlite") && self.source.is_none_or(|s| s.name() != "sqlite")
+    }
+
+    /// `DECODE(x, s1, r1, ..., [default])` as a `CASE`. DECODE matches NULL with
+    /// NULL; `CASE x WHEN` does not, so a literal NULL search value becomes
+    /// `x IS NULL`.
+    fn decode_as_case(&self, x: &Expr, rest: &[&Expr]) -> R {
+        let pairs = rest.chunks_exact(2);
+        let default = pairs.remainder().first();
+        let is_null = |e: &Expr| matches!(e, Expr::Value(Value::Null));
+        let searched = pairs.clone().any(|p| is_null(p[0]));
+        if !matches!(x, Expr::Value(_)) && pairs.clone().any(|p| !matches!(p[0], Expr::Value(_))) {
+            self.note(
+                Severity::Warning,
+                "DECODE treats two NULLs as equal; CASE does not (differs only if both sides can be NULL)",
+                None,
+            );
+        }
+        let xs = self.expr(x)?;
+        let mut out = if searched { "CASE".to_string() } else { format!("CASE {xs}") };
+        for p in pairs {
+            let search = if searched {
+                if is_null(p[0]) {
+                    format!("{xs} IS NULL")
+                } else {
+                    format!("{xs} = {}", self.expr(p[0])?)
+                }
+            } else {
+                self.expr(p[0])?
+            };
+            out.push_str(&format!(" WHEN {search} THEN {}", self.expr(p[1])?));
+        }
+        if let Some(d) = default {
+            out.push_str(&format!(" ELSE {}", self.expr(d)?));
+        }
+        out.push_str(" END");
+        self.note(Severity::Rewritten, "DECODE -> CASE", Some(out.clone()));
+        Ok(out)
+    }
+
     fn function(&self, f: &Function) -> R {
+        if let Some(r) = self.sqlite_rewrite(f) {
+            return r;
+        }
         let args = self.list(&f.args, |s, a| match a {
             FunctionArg::Wildcard => Ok("*".to_string()),
             FunctionArg::Expr(e) => s.expr(e),

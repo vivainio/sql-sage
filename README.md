@@ -186,7 +186,14 @@ the exit code. In Oracle scripts, SQL*Plus commands (`SET`, `WHENEVER`, a lone `
 `N'...'` strings and physical clauses (`TABLESPACE`, `PCTFREE`, `COMPRESS ...`, `ROW STORE ...`,
 `USING INDEX ...`, `ENABLE`/`NOVALIDATE`, `LOB (...) STORE AS ...`) are understood; the physical
 clauses are accepted but dropped from the dump. A PL/SQL unit is skipped up to the next line that
-holds only `/`. DDL inside `EXECUTE IMMEDIATE` or other PL/SQL is therefore invisible.
+holds only `/`.
+
+In an anonymous `BEGIN ... END` / `DECLARE ... END` block, the SQL in `EXECUTE IMMEDIATE '...'`
+strings (also parenthesised, or literals joined with `||`) is extracted and applied in place, as
+if the block ran it unconditionally; the block itself is still counted as skipped. Strings built
+from variables, and anything inside functions, procedures and triggers, are not seen. Extracted
+statements that cannot apply (the table already exists, the column is missing) are usually
+guarded by an `IF`, so they are not errors; `-v` lists them as "not applied".
 
 Migrations that cannot apply (dropping a missing column, creating a table twice, ...) are
 reported on stderr and skipped, and the exit code is 1. Dropping a column also drops the

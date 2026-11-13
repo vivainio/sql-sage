@@ -53,9 +53,20 @@ const RESERVED: &[&str] = &[
 /// Result of [`Parser::parse_statements_lenient`].
 #[derive(Debug)]
 pub struct Lenient {
-    pub statements: Vec<(Statement, Location)>,
+    /// In source order, including statements found inside `EXECUTE IMMEDIATE` strings.
+    pub statements: Vec<LenientStatement>,
     /// Statements that did not parse: where each starts, and why.
     pub skipped: Vec<(Location, ParseError)>,
+}
+
+#[derive(Debug)]
+pub struct LenientStatement {
+    pub statement: Statement,
+    /// Where the statement starts (for dynamic SQL: the `EXECUTE IMMEDIATE`).
+    pub location: Location,
+    /// Found in a string passed to `EXECUTE IMMEDIATE` inside a PL/SQL block. Whether it runs
+    /// depends on the block's logic, which is not evaluated.
+    pub dynamic: bool,
 }
 
 pub struct Parser<'a> {
@@ -220,12 +231,71 @@ impl<'a> Parser<'a> {
                 }
             });
             match result {
-                Ok(s) => out.statements.push((s, at)),
+                Ok(statement) => out.statements.push(LenientStatement { statement, location: at, dynamic: false }),
                 Err(e) => {
                     out.skipped.push((at, e));
                     self.index = start;
+                    let block = self.peek_keyword("DECLARE") || self.peek_keyword("BEGIN");
                     self.recover();
+                    if block {
+                        self.extract_dynamic_sql(start, self.index, &mut out);
+                    }
                 }
+            }
+        }
+    }
+
+    /// Finds `EXECUTE IMMEDIATE '<sql>'` (optionally parenthesised, the string possibly built
+    /// from literals joined with `||`) between two token indexes of a skipped PL/SQL block and
+    /// parses the SQL. Strings built from variables cannot be resolved and are left out.
+    fn extract_dynamic_sql(&self, start: usize, end: usize, out: &mut Lenient) {
+        let mut i = start;
+        while i + 1 < end {
+            let is_exec = matches!(&self.tokens[i].token, Token::Word(w) if w.is_keyword("EXECUTE"))
+                && matches!(&self.tokens[i + 1].token, Token::Word(w) if w.is_keyword("IMMEDIATE"));
+            if !is_exec {
+                i += 1;
+                continue;
+            }
+            let at = self.tokens[i].location.clone();
+            i += 2;
+            while i < end && self.tokens[i].token == Token::LParen {
+                i += 1;
+            }
+            let mut sql = String::new();
+            let mut literal = false;
+            while i < end {
+                let Token::SingleQuotedString(s) = &self.tokens[i].token else { break };
+                sql.push_str(s);
+                literal = true;
+                i += 1;
+                if i < end && self.tokens[i].token == Token::Concat {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            // A literal followed by `||` and something else is only part of the string.
+            let partial = i > start && self.tokens[i - 1].token == Token::Concat;
+            if !literal || partial {
+                continue;
+            }
+            match Parser::new(self.dialect, &sql) {
+                Ok(mut p) => {
+                    let inner = p.parse_statements_lenient();
+                    for s in inner.statements {
+                        out.statements.push(LenientStatement {
+                            statement: s.statement,
+                            location: at.clone(),
+                            dynamic: true,
+                        });
+                    }
+                    for (_, e) in inner.skipped {
+                        let e = ParseError::new(format!("in EXECUTE IMMEDIATE: {}", e.message), e.location);
+                        out.skipped.push((at.clone(), e));
+                    }
+                }
+                Err(e) => out.skipped.push((at.clone(), e)),
             }
         }
     }

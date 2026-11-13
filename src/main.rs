@@ -208,6 +208,9 @@ fn run_schema(kind: DialectKind, to: Option<DialectKind>, paths: &[String], verb
                     for e in &applied.skipped {
                         eprintln!("{}: skipped: {e}", f.display());
                     }
+                    for e in &applied.dynamic_errors {
+                        eprintln!("{}: not applied (EXECUTE IMMEDIATE, probably guarded): {e}", f.display());
+                    }
                 } else if let Some(first) = applied.skipped.first() {
                     eprintln!(
                         "{}: skipped {} statement(s) that could not be parsed (first: {first}); -v lists them",

@@ -76,7 +76,7 @@ fn script_with_sqlplus_commands_storage_clauses_and_plsql() {
         s.to_sql(Oracle).unwrap(),
         "CREATE SEQUENCE order_seq START WITH 1 INCREMENT BY 1 MINVALUE 0 NOCACHE;\n\
          CREATE TABLE orders (id VARCHAR2(32 CHAR) NOT NULL, kind NVARCHAR2(10) DEFAULT 'x' NOT NULL, \
-         total NUMBER(12, 2), online NUMBER(1, 0) NOT NULL, note2 VARCHAR2(10 CHAR), \
+         total NUMBER(12, 2), online NUMBER(1, 0) NOT NULL, note VARCHAR2(10), note2 VARCHAR2(10 CHAR), \
          flag NUMBER(1) DEFAULT 0 NOT NULL, rev VARCHAR2(100 CHAR) GENERATED ALWAYS AS (SUBSTR(id, 0, 100)), \
          CONSTRAINT pk_orders PRIMARY KEY (id), CONSTRAINT ck_total CHECK (total >= 0));\n\
          CREATE INDEX ix_orders_kind ON orders (kind, total);\n\
@@ -190,4 +190,64 @@ fn plsql_units_are_skipped_up_to_the_slash_line() {
         .unwrap();
     assert_eq!(applied.skipped.len(), 1);
     assert_eq!(s.tables().len(), 2);
+}
+
+#[test]
+fn execute_immediate_strings_in_anonymous_blocks_are_applied() {
+    let mut s = Schema::new(Oracle);
+    let applied = s
+        .apply_sql(
+            "BEGIN
+               EXECUTE IMMEDIATE 'CREATE TABLE a (x NUMBER)';
+               IF cnt = 0 THEN
+                 EXECUTE IMMEDIATE('ALTER TABLE a ADD y ' || 'NUMBER');
+               END IF;
+               EXECUTE IMMEDIATE 'ALTER TABLE ' || v_table || ' ADD z NUMBER';
+               EXECUTE IMMEDIATE v_sql;
+             END;
+             /
+             CREATE INDEX i ON a (y);",
+        )
+        .unwrap();
+    assert_eq!(applied.errors, vec![]);
+    assert_eq!(applied.dynamic_errors, vec![]);
+    // The block itself is still reported as not understood.
+    assert_eq!(applied.skipped.len(), 1);
+    assert_eq!(s.to_sql(Oracle).unwrap(), "CREATE TABLE a (x NUMBER, y NUMBER);\nCREATE INDEX i ON a (y);");
+}
+
+#[test]
+fn dynamic_statements_that_cannot_apply_are_not_errors() {
+    let mut s = Schema::new(Oracle);
+    let applied = s
+        .apply_sql(
+            "CREATE TABLE a (x NUMBER);
+             BEGIN
+               EXECUTE IMMEDIATE 'CREATE TABLE a (x NUMBER)';
+               EXECUTE IMMEDIATE 'ALTER TABLE nope ADD c NUMBER';
+               EXECUTE IMMEDIATE 'SELECT FROM';
+             END;
+             /",
+        )
+        .unwrap();
+    assert_eq!(applied.errors, vec![]);
+    let msgs: Vec<_> = applied.dynamic_errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(msgs, ["table a already exists", "table nope does not exist"]);
+    assert_eq!(applied.skipped.len(), 2); // the block, and the string that is not SQL
+    assert!(applied.skipped[1].message.starts_with("in EXECUTE IMMEDIATE: "));
+    assert_eq!(s.tables().len(), 1);
+}
+
+#[test]
+fn execute_immediate_inside_functions_and_procedures_is_not_applied() {
+    let mut s = Schema::new(Oracle);
+    s.apply_sql(
+        "CREATE OR REPLACE PROCEDURE p IS
+         BEGIN
+           EXECUTE IMMEDIATE 'CREATE TABLE a (x NUMBER)';
+         END;
+         /",
+    )
+    .unwrap();
+    assert!(s.tables().is_empty());
 }

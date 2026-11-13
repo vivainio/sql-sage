@@ -67,6 +67,10 @@ pub struct Applied {
     pub errors: Vec<SchemaError>,
     /// Statements that did not parse (PL/SQL, unsupported syntax); they are left out of the schema.
     pub skipped: Vec<SchemaError>,
+    /// Statements taken from `EXECUTE IMMEDIATE` strings that could not apply. Such statements
+    /// are usually guarded (`IF ... THEN`) and are assumed to run, so these are likely to be
+    /// guards that would have skipped them, not mistakes.
+    pub dynamic_errors: Vec<SchemaError>,
 }
 
 fn key(fold: IdentifierFold, id: &Ident) -> String {
@@ -140,7 +144,8 @@ impl Schema {
 
     /// Parses `sql` and applies every statement. Statements that do not parse are skipped (see
     /// [`Applied::skipped`]); statements that parse but cannot apply are reported in
-    /// [`Applied::errors`] and leave the schema unchanged. Only a lexical error (an unterminated
+    /// [`Applied::errors`] and leave the schema unchanged. SQL inside `EXECUTE IMMEDIATE` string
+    /// literals in anonymous PL/SQL blocks is applied as if the block ran it unconditionally. Only a lexical error (an unterminated
     /// string, say) is returned as `Err`, and nothing is applied then.
     pub fn apply_sql(&mut self, sql: &str) -> Result<Applied, ParseError> {
         let dialect = self.kind.dialect();
@@ -149,10 +154,14 @@ impl Schema {
         for (at, e) in parsed.skipped {
             applied.skipped.push(SchemaError { message: e.to_string(), location: Some(at) });
         }
-        for (s, at) in parsed.statements {
-            if let Err(mut e) = self.apply(&s) {
-                e.location = Some(at);
-                applied.errors.push(e);
+        for s in parsed.statements {
+            if let Err(mut e) = self.apply(&s.statement) {
+                e.location = Some(s.location);
+                if s.dynamic {
+                    applied.dynamic_errors.push(e);
+                } else {
+                    applied.errors.push(e);
+                }
             }
         }
         Ok(applied)

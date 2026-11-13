@@ -363,6 +363,73 @@ fn statements_that_are_accepted_but_not_modeled() {
 }
 
 #[test]
+fn oracle_alter_table_clauses() {
+    for sql in [
+        "ALTER TABLE t MOVE ONLINE ROW STORE COMPRESS ADVANCED",
+        "ALTER TABLE t ENABLE ROW MOVEMENT",
+        "ALTER TABLE t LOGGING",
+        "ALTER TABLE t PARALLEL 4",
+        "ALTER TABLE t NOPARALLEL",
+        "ALTER TABLE t DISABLE CONSTRAINT fk_a",
+        "ALTER TABLE t ENABLE NOVALIDATE CONSTRAINT fk_a",
+        "ALTER TABLE t DROP CONSTRAINT fk_a DROP INDEX",
+        "ALTER TABLE t DROP PRIMARY KEY DROP INDEX",
+        "ALTER TABLE t DROP UNIQUE (a, b)",
+        "ALTER TABLE t RENAME CONSTRAINT a TO b",
+        "ALTER TABLE t MODIFY a CONSTRAINT nn_a NOT NULL",
+        "ALTER TABLE t MODIFY PARTITION BY RANGE (d) INTERVAL (NUMTOYMINTERVAL(1, 'MONTH')) (PARTITION p0 VALUES LESS THAN (DATE '2020-01-01')) UPDATE INDEXES",
+        "ALTER TABLE t MODIFY PARTITION BY REFERENCE (fk_a) UPDATE INDEXES",
+        "ALTER TABLE t ADD ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC' NOT NULL",
+        "ALTER TABLE t DROP PARTITION p0",
+        "ALTER TABLE t ADD PARTITION p1 VALUES LESS THAN (10)",
+        "ALTER TABLE t SHRINK SPACE CASCADE",
+        "CREATE TABLE t (a NUMBER, d DATE) PARTITION BY RANGE (d) INTERVAL (NUMTOYMINTERVAL(1, 'MONTH')) (PARTITION p0 VALUES LESS THAN (DATE '2020-01-01')) ENABLE ROW MOVEMENT",
+        "CREATE TABLE t (a NUMBER) PARTITION BY HASH (a) PARTITIONS 4 STORE IN (ts1, ts2)",
+        "CREATE TABLE t (a NUMBER NOT NULL, CONSTRAINT fk FOREIGN KEY (a) REFERENCES u (id)) PARTITION BY REFERENCE (fk)",
+        "CREATE INDEX i ON t (a) GLOBAL PARTITION BY RANGE (a) (PARTITION p VALUES LESS THAN (MAXVALUE))",
+        "CREATE INDEX i ON t (a) LOCAL ONLINE COMPUTE STATISTICS",
+        "CREATE BITMAP INDEX i ON t (a)",
+        "SELECT SYSDATE AT TIME ZONE 'UTC' FROM dual",
+    ] {
+        assert!(check_syntax(Oracle, sql).is_ok(), "{sql}");
+    }
+    assert_eq!(
+        transpile(Oracle, Oracle, "ALTER TABLE t DROP CONSTRAINT c DROP INDEX, ENABLE ROW MOVEMENT").unwrap(),
+        "ALTER TABLE t DROP CONSTRAINT c, ENABLE ROW MOVEMENT;"
+    );
+    assert!(transpile(Oracle, Postgres, "ALTER TABLE t MOVE ONLINE").is_err());
+    assert_eq!(
+        transpile(Oracle, Postgres, "SELECT a AT TIME ZONE 'UTC' FROM t").unwrap(),
+        "SELECT a AT TIME ZONE 'UTC' FROM t;"
+    );
+    assert!(check_syntax(Postgres, "ALTER TABLE t MOVE ONLINE").is_err());
+}
+
+#[test]
+fn oracle_alter_table_clauses_in_a_schema() {
+    assert_eq!(
+        derive(
+            Oracle,
+            "CREATE TABLE t (a NUMBER PRIMARY KEY, b NUMBER, c NUMBER, CONSTRAINT u_bc UNIQUE (b, c), CONSTRAINT ck CHECK (a > 0));
+             ALTER TABLE t MOVE ONLINE;
+             ALTER TABLE t RENAME CONSTRAINT ck TO ck_a;
+             ALTER TABLE t DROP UNIQUE (c, b) DROP INDEX;
+             ALTER TABLE t DROP PRIMARY KEY;
+             ALTER TABLE t MODIFY b CONSTRAINT nn_b NOT NULL;"
+        ),
+        "CREATE TABLE t (a NUMBER, b NUMBER NOT NULL, c NUMBER, CONSTRAINT ck_a CHECK (a > 0));"
+    );
+    assert_eq!(
+        errors(Oracle, "CREATE TABLE t (b NUMBER, c NUMBER, UNIQUE (b, c)); ALTER TABLE t DROP UNIQUE (b);"),
+        ["table t has no such unique constraint"]
+    );
+    assert_eq!(
+        errors(Oracle, "CREATE TABLE t (a NUMBER); ALTER TABLE t DROP PRIMARY KEY;"),
+        ["table t has no primary key"]
+    );
+}
+
+#[test]
 fn truncate_and_rename() {
     assert_eq!(transpile(Oracle, Postgres, "TRUNCATE TABLE a, b DROP STORAGE").unwrap(), "TRUNCATE TABLE a, b;");
     assert_eq!(transpile(Postgres, Postgres, "TRUNCATE a CASCADE").unwrap(), "TRUNCATE TABLE a;");

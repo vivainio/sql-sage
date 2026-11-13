@@ -596,6 +596,10 @@ impl Collector {
             | Expr::IsNull(expr)
             | Expr::IsNotNull(expr)
             | Expr::Cast { expr, .. } => self.expr(expr),
+            Expr::AtTimeZone { expr, zone } => {
+                self.expr(expr);
+                self.expr(zone);
+            }
             Expr::Tuple(t) => t.iter().for_each(|e| self.expr(e)),
             Expr::Between { expr, low, high, .. } => {
                 self.expr(expr);

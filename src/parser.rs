@@ -617,6 +617,7 @@ impl<'a> Parser<'a> {
         let mut actions = vec![];
         loop {
             self.parse_alter_action(&mut actions)?;
+            self.skip_physical_clauses()?;
             if !self.consume_token(&Token::Comma) {
                 break;
             }
@@ -624,7 +625,85 @@ impl<'a> Parser<'a> {
         Ok(Statement::AlterTable(AlterTable { if_exists, name, actions }))
     }
 
+    /// Is the clause at the current token one that is accepted but not modeled?
+    fn alter_clause_is_opaque(&self) -> bool {
+        if !self.dialect.supports_physical_clauses() {
+            return false;
+        }
+        const ALWAYS: [&str; 24] = [
+            "MOVE",
+            "ENABLE",
+            "DISABLE",
+            "LOGGING",
+            "NOLOGGING",
+            "PARALLEL",
+            "NOPARALLEL",
+            "COMPRESS",
+            "NOCOMPRESS",
+            "SHRINK",
+            "READ",
+            "CACHE",
+            "NOCACHE",
+            "MONITORING",
+            "NOMONITORING",
+            "INMEMORY",
+            "SPLIT",
+            "TRUNCATE",
+            "EXCHANGE",
+            "COALESCE",
+            "FLASHBACK",
+            "ALLOCATE",
+            "DEALLOCATE",
+            "UPGRADE",
+        ];
+        if ALWAYS.iter().any(|k| self.peek_keyword(k)) {
+            return true;
+        }
+        const AFTER: [&str; 8] =
+            ["PARTITION", "SUBPARTITION", "CONSTRAINT", "SUPPLEMENTAL", "UNUSED", "LOB", "DEFAULT", "CLUSTERING"];
+        let verb = ["ADD", "DROP", "MODIFY", "RENAME", "SET"].iter().any(|k| self.peek_keyword(k));
+        // DROP CONSTRAINT is modeled; so is RENAME CONSTRAINT.
+        verb && AFTER.iter().any(|k| self.peek_nth_keyword(1, k))
+            && !(self.peek_keyword("DROP") && self.peek_nth_keyword(1, "CONSTRAINT"))
+            && !(self.peek_keyword("RENAME") && self.peek_nth_keyword(1, "CONSTRAINT"))
+            && !(self.peek_keyword("ADD") && self.peek_nth_keyword(1, "CONSTRAINT"))
+            || self.peek_keyword("MODIFY") && self.peek_nth_keyword(1, "CONSTRAINT")
+            || (self.peek_keyword("ADD") || self.peek_keyword("SET")) && self.peek_nth_keyword(1, "PARTITION")
+    }
+
+    /// Consumes an unmodeled clause (up to a `,` or the end of the statement, outside parentheses).
+    fn parse_alter_opaque(&mut self, out: &mut Vec<AlterAction>) {
+        let start = self.index;
+        let mut depth = 0usize;
+        loop {
+            match self.peek_token() {
+                Token::Eof | Token::Semicolon => break,
+                Token::Comma if depth == 0 => break,
+                Token::LParen => depth += 1,
+                Token::RParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            self.index += 1;
+        }
+        out.push(AlterAction::Other(self.tokens_text(start, self.index)));
+    }
+
+    fn skip_drop_tail(&mut self) {
+        loop {
+            if self.parse_keyword("CASCADE") || self.parse_keyword("ONLINE") || self.parse_keyword("INVALIDATE") {
+            } else if (self.peek_keyword("DROP") || self.peek_keyword("KEEP")) && self.peek_nth_keyword(1, "INDEX") {
+                self.index += 2;
+            } else {
+                return;
+            }
+        }
+    }
+
     fn parse_alter_action(&mut self, out: &mut Vec<AlterAction>) -> Result<()> {
+        if self.alter_clause_is_opaque() {
+            self.parse_alter_opaque(out);
+            return Ok(());
+        }
         if self.parse_keyword("ADD") {
             if self.peek_table_constraint() {
                 out.push(AlterAction::AddConstraint(self.parse_table_constraint()?));
@@ -648,10 +727,22 @@ impl<'a> Parser<'a> {
             }
             out.push(AlterAction::AddColumn { if_not_exists, column: self.parse_column_def()? });
         } else if self.parse_keyword("DROP") {
+            if self.parse_keywords(&["PRIMARY", "KEY"]) {
+                self.skip_drop_tail();
+                out.push(AlterAction::DropPrimaryKey);
+                return Ok(());
+            }
+            if self.parse_keyword("UNIQUE") {
+                let cols = self.parse_paren_idents()?;
+                self.skip_drop_tail();
+                out.push(AlterAction::DropUnique(cols));
+                return Ok(());
+            }
             if self.parse_keyword("CONSTRAINT") {
                 let if_exists = self.parse_keywords(&["IF", "EXISTS"]);
                 let name = self.parse_ident()?;
                 let behavior = self.parse_drop_behavior();
+                self.skip_drop_tail();
                 out.push(AlterAction::DropConstraint { if_exists, name, behavior });
                 return Ok(());
             }
@@ -670,6 +761,10 @@ impl<'a> Parser<'a> {
         } else if self.parse_keyword("RENAME") {
             if self.parse_keyword("TO") {
                 out.push(AlterAction::RenameTable(self.parse_ident()?));
+            } else if self.parse_keyword("CONSTRAINT") {
+                let old = self.parse_ident()?;
+                self.expect_keyword("TO")?;
+                out.push(AlterAction::RenameConstraint { old, new: self.parse_ident()? });
             } else {
                 let _ = self.parse_keyword("COLUMN");
                 let old = self.parse_ident()?;
@@ -701,17 +796,25 @@ impl<'a> Parser<'a> {
             let paren = self.consume_token(&Token::LParen);
             loop {
                 let name = self.parse_ident()?;
-                if !(self.peek_keyword("DEFAULT") || self.peek_keyword("NOT") || self.peek_keyword("NULL")) {
+                if !(self.peek_keyword("DEFAULT")
+                    || self.peek_keyword("NOT")
+                    || self.peek_keyword("NULL")
+                    || self.peek_keyword("CONSTRAINT"))
+                {
                     out.push(AlterAction::AlterColumnType { name: name.clone(), data_type: self.parse_data_type()? });
                 }
                 if self.parse_keyword("DEFAULT") {
                     out.push(AlterAction::SetDefault { name: name.clone(), default: self.parse_expr()? });
+                }
+                if self.parse_keyword("CONSTRAINT") {
+                    self.parse_ident()?;
                 }
                 if self.parse_keywords(&["NOT", "NULL"]) {
                     out.push(AlterAction::SetNotNull(name));
                 } else if self.parse_keyword("NULL") {
                     out.push(AlterAction::DropNotNull(name));
                 }
+                self.skip_constraint_attributes()?;
                 if !(paren && self.consume_token(&Token::Comma)) {
                     break;
                 }
@@ -945,7 +1048,21 @@ impl<'a> Parser<'a> {
                 }
                 "LOGGING" | "NOLOGGING" | "NOCOMPRESS" | "NOPARALLEL" | "CACHE" | "NOCACHE" | "MONITORING"
                 | "NOMONITORING" | "NOSORT" | "REVERSE" | "VISIBLE" | "INVISIBLE" | "NOROWDEPENDENCIES"
-                | "ROWDEPENDENCIES" => self.index += 1,
+                | "ROWDEPENDENCIES" | "ONLINE" | "GLOBAL" | "LOCAL" | "INMEMORY" => self.index += 1,
+                "NO" if next_is(self, "INMEMORY") => self.index += 2,
+                "COMPUTE" if next_is(self, "STATISTICS") => self.index += 2,
+                "UPDATE" if next_is(self, "INDEXES") || next_is(self, "GLOBAL") => {
+                    self.index += 1;
+                    self.parse_keyword("GLOBAL");
+                    self.expect_keyword("INDEXES")?;
+                    if *self.peek_token() == Token::LParen {
+                        self.skip_balanced_parens()?;
+                    }
+                }
+                "PARTITION" if next_is(self, "BY") => {
+                    self.index += 2;
+                    self.skip_partition_spec()?;
+                }
                 "COMPRESS" => {
                     self.index += 1;
                     self.skip_compress_options();
@@ -999,6 +1116,39 @@ impl<'a> Parser<'a> {
                     if *self.peek_token() == Token::LParen {
                         self.skip_balanced_parens()?;
                     }
+                }
+                _ => return Ok(()),
+            }
+        }
+    }
+
+    /// After `PARTITION BY`: `RANGE (col) INTERVAL (..) STORE IN (..) (PARTITION p VALUES ...)`.
+    fn skip_partition_spec(&mut self) -> Result<()> {
+        const WORDS: [&str; 11] = [
+            "INTERVAL",
+            "PARTITIONS",
+            "SUBPARTITIONS",
+            "SUBPARTITION",
+            "BY",
+            "STORE",
+            "IN",
+            "TEMPLATE",
+            "AUTOMATIC",
+            "RANGE",
+            "LIST",
+        ];
+        if !matches!(self.peek_token(), Token::Word(_)) {
+            return self.expected("RANGE, LIST, HASH or REFERENCE");
+        }
+        self.index += 1;
+        loop {
+            match self.peek_token() {
+                Token::LParen => self.skip_balanced_parens()?,
+                Token::Number(_) => self.index += 1,
+                Token::Word(w)
+                    if w.quote.is_none() && (WORDS.iter().any(|k| w.is_keyword(k)) || w.is_keyword("HASH")) =>
+                {
+                    self.index += 1
                 }
                 _ => return Ok(()),
             }
@@ -1611,6 +1761,7 @@ impl<'a> Parser<'a> {
                 "IN" | "BETWEEN" | "LIKE" => 20,
                 "ILIKE" | "GLOB" if self.is_predicate_keyword(0) => 20,
                 "NOT" if self.is_predicate_keyword(1) => 20,
+                "AT" if self.peek_nth_keyword(1, "TIME") && self.peek_nth_keyword(2, "ZONE") => 60,
                 _ => 0,
             },
             Token::Eq | Token::Neq | Token::Lt | Token::LtEq | Token::Gt | Token::GtEq => 20,
@@ -1653,6 +1804,12 @@ impl<'a> Parser<'a> {
             Token::DoubleColon => Ok(Expr::Cast { expr: left, data_type: self.parse_data_type()? }),
             Token::Word(w) => {
                 let upper = w.value.to_ascii_uppercase();
+                if upper == "AT" {
+                    self.expect_keyword("TIME")?;
+                    self.expect_keyword("ZONE")?;
+                    let zone = Box::new(self.parse_subexpr(prec)?);
+                    return Ok(Expr::AtTimeZone { expr: left, zone });
+                }
                 if upper == "IS" {
                     let negated = self.parse_keyword("NOT");
                     self.expect_keyword("NULL")?;

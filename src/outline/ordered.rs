@@ -286,6 +286,12 @@ impl Outline {
                 AlterAction::DropDefault(n) => format!("alter column {} drop default", self.id(n)),
                 AlterAction::AddConstraint(c) => format!("add {}", self.table_constraint(c)),
                 AlterAction::DropConstraint { name, .. } => format!("drop constraint {}", self.id(name)),
+                AlterAction::DropPrimaryKey => "drop primary key".to_string(),
+                AlterAction::DropUnique(cols) => format!("drop unique ({})", self.ids(cols)),
+                AlterAction::RenameConstraint { old, new } => {
+                    format!("rename constraint {} to {}", self.id(old), self.id(new))
+                }
+                AlterAction::Other(text) => text.to_lowercase(),
             };
             lines.push(indent(&l, 2));
         }
@@ -591,6 +597,7 @@ impl Outline {
                 format!("{not}exists {}", self.sub(subquery))
             }
             Expr::Subquery(q) => self.sub(q),
+            Expr::AtTimeZone { expr, zone } => format!("{} at time zone {}", self.expr(expr), self.expr(zone)),
             Expr::Cast { expr, data_type } => {
                 let simple = matches!(
                     **expr,

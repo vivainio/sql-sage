@@ -573,6 +573,63 @@ impl Schema {
                 }
                 self.tables[ti].constraints.push(c.clone());
             }
+            AlterAction::Other(_) => {}
+            AlterAction::DropPrimaryKey => {
+                let t = &mut self.tables[ti];
+                let (c0, o0) = (t.constraints.len(), t.columns.iter().map(|c| c.options.len()).sum::<usize>());
+                t.constraints.retain(|c| !matches!(c.kind, TableConstraintKind::PrimaryKey(_)));
+                for col in &mut t.columns {
+                    col.options.retain(|o| o.option != ColumnOption::PrimaryKey);
+                }
+                let o1 = t.columns.iter().map(|c| c.options.len()).sum::<usize>();
+                if (c0, o0) == (t.constraints.len(), o1) {
+                    return err(format!("table {} has no primary key", last(&t.name).value));
+                }
+            }
+            AlterAction::DropUnique(cols) => {
+                // The column set matters, not its order.
+                let sorted = |v: &[Ident]| {
+                    let mut k: Vec<String> = v.iter().map(|c| key(fold, c)).collect();
+                    k.sort();
+                    k
+                };
+                let want = sorted(cols);
+                let t = &mut self.tables[ti];
+                let before = t.constraints.len();
+                t.constraints.retain(|c| match &c.kind {
+                    TableConstraintKind::Unique(have) => sorted(have) != want,
+                    _ => true,
+                });
+                let mut found = t.constraints.len() != before;
+                if let [only] = want.as_slice() {
+                    for col in t.columns.iter_mut().filter(|c| &key(fold, &c.name) == only) {
+                        let before = col.options.len();
+                        col.options.retain(|o| o.option != ColumnOption::Unique);
+                        found |= col.options.len() != before;
+                    }
+                }
+                if !found {
+                    return err(format!("table {} has no such unique constraint", last(&t.name).value));
+                }
+            }
+            AlterAction::RenameConstraint { old, new } => {
+                let ok = self.k(old);
+                let t = &mut self.tables[ti];
+                let mut found = false;
+                for c in t.constraints.iter_mut().filter(|c| c.name.as_ref().is_some_and(|n| key(fold, n) == ok)) {
+                    c.name = Some(new.clone());
+                    found = true;
+                }
+                for o in t.columns.iter_mut().flat_map(|c| c.options.iter_mut()) {
+                    if o.name.as_ref().is_some_and(|n| key(fold, n) == ok) {
+                        o.name = Some(new.clone());
+                        found = true;
+                    }
+                }
+                if !found {
+                    return err(format!("constraint {} of table {} does not exist", old.value, last(&t.name).value));
+                }
+            }
             AlterAction::DropConstraint { if_exists, name, .. } => {
                 if !self.drop_constraint(ti, name) && !*if_exists {
                     return err(format!(

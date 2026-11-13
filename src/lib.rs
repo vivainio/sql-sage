@@ -73,6 +73,16 @@ pub fn transpile(from: DialectKind, to: DialectKind, sql: &str) -> Result<String
                 return Err(TranspileError::Emit(EmitError { message }));
             }
         }
+        if from != to {
+            if let Statement::AlterTable(a) = s {
+                if let Some(ast::AlterAction::Other(text)) =
+                    a.actions.iter().find(|x| matches!(x, ast::AlterAction::Other(_)))
+                {
+                    let message = format!("ALTER TABLE clause `{text}` cannot be translated");
+                    return Err(TranspileError::Emit(EmitError { message }));
+                }
+            }
+        }
         out.push(format!("{};", s.to_sql(target.as_ref()).map_err(TranspileError::Emit)?));
     }
     Ok(out.join("\n"))

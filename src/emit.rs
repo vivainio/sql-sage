@@ -596,6 +596,12 @@ impl<'a> Emitter<'a> {
                     only_pg("ADD CONSTRAINT")?;
                     format!("ADD {}", self.table_constraint(c)?)
                 }
+                AlterAction::DropPrimaryKey => "DROP PRIMARY KEY".to_string(),
+                AlterAction::DropUnique(cols) => format!("DROP UNIQUE {}", self.paren_idents(cols)),
+                AlterAction::RenameConstraint { old, new } => {
+                    format!("RENAME CONSTRAINT {} TO {}", self.ident(old), self.ident(new))
+                }
+                AlterAction::Other(text) => text.clone(),
                 AlterAction::DropConstraint { if_exists, name, behavior: b } => {
                     only_pg("DROP CONSTRAINT")?;
                     let mut p = String::from("DROP CONSTRAINT ");
@@ -1100,6 +1106,7 @@ impl<'a> Emitter<'a> {
             Expr::Exists { subquery, negated } => format!("{}EXISTS ({})", neg(*negated), self.query(subquery)?),
             Expr::Subquery(q) => format!("({})", self.query(q)?),
             Expr::Cast { expr, data_type } => format!("CAST({} AS {})", self.expr(expr)?, self.data_type(data_type)?),
+            Expr::AtTimeZone { expr, zone } => format!("{} AT TIME ZONE {}", self.expr(expr)?, self.expr(zone)?),
             Expr::Case { operand, branches, else_result } => {
                 let mut s = String::from("CASE");
                 if let Some(o) = operand {

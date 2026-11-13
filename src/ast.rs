@@ -172,23 +172,71 @@ pub enum Expr {
     CompoundIdentifier(Vec<Ident>),
     Value(Value),
     Placeholder(String),
-    TypedString { data_type: DataType, value: String },
-    BinaryOp { left: Box<Expr>, op: BinaryOperator, right: Box<Expr> },
-    UnaryOp { op: UnaryOperator, expr: Box<Expr> },
+    TypedString {
+        data_type: DataType,
+        value: String,
+    },
+    BinaryOp {
+        left: Box<Expr>,
+        op: BinaryOperator,
+        right: Box<Expr>,
+    },
+    UnaryOp {
+        op: UnaryOperator,
+        expr: Box<Expr>,
+    },
     Nested(Box<Expr>),
     Tuple(Vec<Expr>),
     IsNull(Box<Expr>),
     IsNotNull(Box<Expr>),
-    Between { expr: Box<Expr>, negated: bool, low: Box<Expr>, high: Box<Expr> },
-    InList { expr: Box<Expr>, list: Vec<Expr>, negated: bool },
-    InSubquery { expr: Box<Expr>, subquery: Box<Query>, negated: bool },
-    Like { expr: Box<Expr>, negated: bool, kind: LikeKind, pattern: Box<Expr>, escape: Option<Box<Expr>> },
-    Exists { subquery: Box<Query>, negated: bool },
+    Between {
+        expr: Box<Expr>,
+        negated: bool,
+        low: Box<Expr>,
+        high: Box<Expr>,
+    },
+    InList {
+        expr: Box<Expr>,
+        list: Vec<Expr>,
+        negated: bool,
+    },
+    InSubquery {
+        expr: Box<Expr>,
+        subquery: Box<Query>,
+        negated: bool,
+    },
+    Like {
+        expr: Box<Expr>,
+        negated: bool,
+        kind: LikeKind,
+        pattern: Box<Expr>,
+        escape: Option<Box<Expr>>,
+    },
+    Exists {
+        subquery: Box<Query>,
+        negated: bool,
+    },
     Subquery(Box<Query>),
-    Cast { expr: Box<Expr>, data_type: DataType },
-    Case { operand: Option<Box<Expr>>, branches: Vec<CaseBranch>, else_result: Option<Box<Expr>> },
+    Cast {
+        expr: Box<Expr>,
+        data_type: DataType,
+    },
+    /// `expr AT TIME ZONE zone`
+    AtTimeZone {
+        expr: Box<Expr>,
+        zone: Box<Expr>,
+    },
+    Case {
+        operand: Option<Box<Expr>>,
+        branches: Vec<CaseBranch>,
+        else_result: Option<Box<Expr>>,
+    },
     Function(Function),
-    Trim { side: Option<TrimSide>, chars: Option<Box<Expr>>, expr: Box<Expr> },
+    Trim {
+        side: Option<TrimSide>,
+        chars: Option<Box<Expr>>,
+        expr: Box<Expr>,
+    },
 }
 
 /// Which end `TRIM(<side> chars FROM expr)` cuts.
@@ -475,17 +523,46 @@ pub struct AlterTable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AlterAction {
-    AddColumn { if_not_exists: bool, column: ColumnDef },
-    DropColumn { if_exists: bool, name: Ident, behavior: Option<DropBehavior> },
-    RenameColumn { old: Ident, new: Ident },
+    AddColumn {
+        if_not_exists: bool,
+        column: ColumnDef,
+    },
+    DropColumn {
+        if_exists: bool,
+        name: Ident,
+        behavior: Option<DropBehavior>,
+    },
+    RenameColumn {
+        old: Ident,
+        new: Ident,
+    },
     RenameTable(Ident),
-    AlterColumnType { name: Ident, data_type: DataType },
+    AlterColumnType {
+        name: Ident,
+        data_type: DataType,
+    },
     SetNotNull(Ident),
     DropNotNull(Ident),
-    SetDefault { name: Ident, default: Expr },
+    SetDefault {
+        name: Ident,
+        default: Expr,
+    },
     DropDefault(Ident),
     AddConstraint(TableConstraint),
-    DropConstraint { if_exists: bool, name: Ident, behavior: Option<DropBehavior> },
+    DropConstraint {
+        if_exists: bool,
+        name: Ident,
+        behavior: Option<DropBehavior>,
+    },
+    DropPrimaryKey,
+    DropUnique(Vec<Ident>),
+    RenameConstraint {
+        old: Ident,
+        new: Ident,
+    },
+    /// A clause that is accepted but not modeled: `MOVE`, `ENABLE CONSTRAINT`, `LOGGING`,
+    /// partition maintenance, ... Its text is kept as written.
+    Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

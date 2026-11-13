@@ -132,6 +132,15 @@ fn multi_table_insert_from_dual_becomes_plain_inserts() {
 }
 
 #[test]
+fn small_oracle_idioms() {
+    assert_eq!(lite("SELECT TO_DATE(SYSDATE, 'DD-MM-YYYY') FROM dual"), "SELECT date('now', 'localtime');");
+    assert_eq!(lite("SELECT TO_CLOB(a) FROM t"), "SELECT a FROM t;");
+    // LIMIT is a plain column name in Oracle
+    assert_eq!(lite("SELECT limit, a FROM t"), "SELECT \"limit\", a FROM t;");
+    assert_eq!(transpile(Oracle, Oracle, "SELECT limit FROM t").unwrap(), "SELECT limit FROM t;");
+}
+
+#[test]
 fn rr_accepts_four_digit_years() {
     assert_eq!(lite("SELECT TO_DATE('31-12-9999', 'DD-MM-RR') FROM dual"), "SELECT '9999-12-31';");
     assert_eq!(lite("SELECT TO_DATE('01-04-16', 'DD-MM-RR') FROM dual"), "SELECT '2016-04-01';");

@@ -84,6 +84,17 @@ a start, `TO_NUMBER(x)`, `MONTHS_BETWEEN`, `INITCAP` (ASCII letters), `STDDEV`/`
 masks `strftime` can reproduce; other masks stay an error), `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
 types and similar constructs error on engines that lack them.
 
+Oracle scripts to SQLite also get: `TO_DATE`/`TO_TIMESTAMP` with literal arguments evaluated at
+translation time (`TO_DATE('01/02/2020', 'MM/DD/YYYY')` becomes `'2020-01-02'`; many masks, incl.
+`RR`, `MON`, `AM`, `FF`), `SYS_GUID()`, `SYS_EXTRACT_UTC`, `HEXTORAW('..')`, `NLSSORT(x, 'NLS_SORT=BINARY_CI')`,
+`CREATE OR REPLACE [FORCE] VIEW` (as `DROP VIEW IF EXISTS` + `CREATE VIEW`), `COMMIT`/`ROLLBACK`/`SAVEPOINT`,
+`INSERT ALL ... FROM dual` (one `INSERT` per target), `ALTER INDEX ... REBUILD` (`REINDEX`), and
+`ALTER TABLE` storage clauses (`MOVE`, `LOGGING`, `PARALLEL`, `COMPRESS`, ... are dropped, being no-ops there).
+Not translatable: PL/SQL, sequences, `ALTER TABLE` that changes a column or adds/drops a constraint (SQLite
+cannot), `MERGE`, `CONNECT BY`, and calls to the script's own functions and procedures. For a script that
+`ALTER`s its tables, derive the final tables instead: `sql-sage -d oracle --to sqlite --schema scripts/`
+(objects SQLite cannot hold, such as sequences, are left out with a warning).
+
 ## Compatibility report
 
 ```

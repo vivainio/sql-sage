@@ -160,6 +160,11 @@ impl<'a> Emitter<'a> {
             }
         }
         match (i.quote_style, self.target) {
+            // LIMIT is an ordinary name in Oracle but a keyword where there is a LIMIT clause
+            (None, Some(d)) if d.supports_limit() && i.value.eq_ignore_ascii_case("LIMIT") => {
+                let q = d.identifier_quote();
+                format!("{q}{}{q}", i.value)
+            }
             (None, _) => i.value.clone(),
             (Some('['), None) => format!("[{}]", i.value),
             (Some(q), None) => format!("{q}{}{q}", i.value.replace(q, &format!("{q}{q}"))),
@@ -1524,6 +1529,21 @@ impl<'a> Emitter<'a> {
                     self.note(Severity::Warning, "NLSSORT(.., BINARY_CI) -> lower(): only ASCII letters fold", None);
                     rewritten(format!("lower({x})"), "NLSSORT(x, 'NLS_SORT=BINARY_CI') -> lower(x)")
                 }))
+            }
+            ("TO_CLOB" | "TO_NCLOB", [x]) => {
+                Some(self.expr(x).and_then(|x| rewritten(x, &format!("{name}(x) -> x: text is text"))))
+            }
+            ("TO_DATE", [Expr::Identifier(i), Expr::Value(Value::String(mask))])
+                if i.quote_style.is_none()
+                    && ["SYSDATE", "CURRENT_DATE", "SYSTIMESTAMP"].iter().any(|k| i.value.eq_ignore_ascii_case(k))
+                    && !["HH", "MI", "SS", "FF"].iter().any(|t| mask.to_ascii_uppercase().contains(t)) =>
+            {
+                // TO_DATE(SYSDATE, 'DD-MM-YYYY') converts the date to text and back: today, without the time
+                self.note(Severity::Warning, "TO_DATE(SYSDATE, mask) -> today's date without the time of day", None);
+                Some(rewritten(
+                    "date('now', 'localtime')".into(),
+                    "TO_DATE(SYSDATE, date mask) -> date('now', 'localtime')",
+                ))
             }
             ("TO_DATE", [Expr::Value(Value::String(v))]) => {
                 // no mask: the session's NLS_DATE_FORMAT, DD-MON-RR unless changed

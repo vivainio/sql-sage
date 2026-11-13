@@ -30,6 +30,7 @@ impl Outline {
             Statement::Delete(d) => self.delete(d),
             Statement::CreateTable(c) => self.create_table(c),
             Statement::CreateIndex(c) => self.create_index(c),
+            Statement::AlterTable(a) => self.alter_table(a),
             Statement::Drop(d) => self.drop_stmt(d),
         }
     }
@@ -218,6 +219,36 @@ impl Outline {
             s.push_str(&format!("\n{}", indent(&self.filter("filter", w), 2)));
         }
         s
+    }
+
+    pub(super) fn alter_table(&self, a: &AlterTable) -> String {
+        let mut lines =
+            vec![format!("alter table {}{}", self.name(&a.name), if a.if_exists { " if exists" } else { "" })];
+        for act in &a.actions {
+            let l = match act {
+                AlterAction::AddColumn { column, .. } => {
+                    let ty = column.data_type.as_ref().map(|t| self.ty(t)).unwrap_or_default();
+                    let opts = column.options.iter().map(|o| self.column_option(o)).collect::<Vec<_>>().join("  ");
+                    format!("add column {} {ty} {opts}", self.id(&column.name)).trim_end().to_string()
+                }
+                AlterAction::DropColumn { name, .. } => format!("drop column {}", self.id(name)),
+                AlterAction::RenameColumn { old, new } => format!("rename column {} to {}", self.id(old), self.id(new)),
+                AlterAction::RenameTable(n) => format!("rename to {}", self.id(n)),
+                AlterAction::AlterColumnType { name, data_type } => {
+                    format!("alter column {} type {}", self.id(name), self.ty(data_type))
+                }
+                AlterAction::SetNotNull(n) => format!("alter column {} set not null", self.id(n)),
+                AlterAction::DropNotNull(n) => format!("alter column {} drop not null", self.id(n)),
+                AlterAction::SetDefault { name, default } => {
+                    format!("alter column {} set default {}", self.id(name), self.expr(default))
+                }
+                AlterAction::DropDefault(n) => format!("alter column {} drop default", self.id(n)),
+                AlterAction::AddConstraint(c) => format!("add {}", self.table_constraint(c)),
+                AlterAction::DropConstraint { name, .. } => format!("drop constraint {}", self.id(name)),
+            };
+            lines.push(indent(&l, 2));
+        }
+        lines.join("\n")
     }
 
     pub(super) fn drop_stmt(&self, d: &Drop) -> String {

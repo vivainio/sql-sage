@@ -58,7 +58,7 @@ impl Outline {
                 }
                 s
             }
-            Statement::Drop(_) => self.statement(s),
+            Statement::AlterTable(_) | Statement::Drop(_) => self.statement(s),
         }
     }
 

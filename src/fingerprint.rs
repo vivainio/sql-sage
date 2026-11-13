@@ -27,6 +27,7 @@ pub enum StatementKind {
     Delete,
     CreateTable,
     CreateIndex,
+    AlterTable,
     DropTable,
     DropView,
     DropIndex,
@@ -41,6 +42,7 @@ impl fmt::Display for StatementKind {
             StatementKind::Delete => "delete",
             StatementKind::CreateTable => "create_table",
             StatementKind::CreateIndex => "create_index",
+            StatementKind::AlterTable => "alter_table",
             StatementKind::DropTable => "drop_table",
             StatementKind::DropView => "drop_view",
             StatementKind::DropIndex => "drop_index",
@@ -56,6 +58,7 @@ pub enum Access {
     Update,
     Delete,
     Create,
+    Alter,
     Drop,
     Index,
 }
@@ -74,6 +77,7 @@ impl fmt::Display for Access {
             Access::Update => "update",
             Access::Delete => "delete",
             Access::Create => "create",
+            Access::Alter => "alter",
             Access::Drop => "drop",
             Access::Index => "index",
         })
@@ -388,6 +392,22 @@ impl Collector {
                     self.ops.insert(Operation::Filter);
                 }
                 StatementKind::CreateIndex
+            }
+            Statement::AlterTable(a) => {
+                self.table(&a.name, Access::Alter);
+                for act in &a.actions {
+                    if let AlterAction::AddConstraint(TableConstraint {
+                        kind: TableConstraintKind::ForeignKey { reference, .. },
+                        ..
+                    }) = act
+                    {
+                        self.ops.insert(Operation::ForeignKey);
+                        if normalize(&reference.table) != normalize(&a.name) {
+                            self.table(&reference.table, Access::Read);
+                        }
+                    }
+                }
+                StatementKind::AlterTable
             }
             Statement::Drop(d) => {
                 for n in &d.names {

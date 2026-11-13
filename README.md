@@ -45,6 +45,7 @@ sql-sage -d oracle --compat postgres -f query.sql            # what needs changi
 sql-sage -d postgres --to ordered "SELECT ..."               # readable outline
 sql-sage -d postgres --to tight "SELECT ..."                 # symbolic outline
 sql-sage -d oracle --fingerprint -f queries.sql              # tables, operations, functions
+sql-sage -d postgres --schema migrations/                    # derive the schema from migrations
 sql-sage -d sqlite --ast "SELECT 1"                          # AST as YAML
 sql-sage -d sqlite --ast-compact "SELECT 1"                  # shorter YAML-like text (not valid YAML)
 sql-sage -d sqlite --ast-debug "SELECT 1"                    # verbose Rust Debug output
@@ -164,6 +165,27 @@ From Rust: `fingerprint_sql(dialect, sql)` or `stmt.fingerprint_for(dialect)` (u
 `stmt.fingerprint()` for shape only), with `reads()`, `writes()`, `is_read_only()`, `id()`
 and `compat_code()` on the result.
 
+## Schema from migrations
+
+`--schema` simulates DDL: it applies `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX` and `DROP`
+from the given files in order (directories contribute their `*.sql` files, sorted) and prints
+the resulting schema as `CREATE` statements. `--to` picks the output dialect.
+
+```
+$ sql-sage -d postgres --schema 001_init.sql 002_change.sql
+002_change.sql: table nope does not exist at line 5, column 1
+CREATE TABLE accounts (id SERIAL PRIMARY KEY, mail TEXT NOT NULL, name VARCHAR(100) DEFAULT 'x' NOT NULL);
+CREATE TABLE orders (id INT PRIMARY KEY, user_id INT REFERENCES accounts (id));
+CREATE INDEX ix_o ON orders (user_id);
+```
+
+Migrations that cannot apply (dropping a missing column, creating a table twice, ...) are
+reported on stderr and skipped, and the exit code is 1. Dropping a column also drops the
+constraints and indexes that use it; renaming a table or column updates references to it.
+`DROP CONSTRAINT` also understands PostgreSQL's generated names (`t_pkey`, `t_col_key`,
+`t_col_fkey`). Names match on their last part (`public.t` is `t`). Queries and DML are ignored;
+views, sequences and procedural code are not modeled. From Rust: `sql_sage::schema::Schema`.
+
 ## Function catalogs
 
 Function availability is judged against catalogs of the built-in functions of the latest
@@ -216,9 +238,9 @@ interchange format.
 
 * Syntax only: no check that tables, columns or types exist.
 * Covered: `SELECT` (CTEs, set operations, joins, subqueries, window functions), `INSERT`
-  (incl. `ON CONFLICT`), `UPDATE`, `DELETE`, `CREATE TABLE`, `CREATE INDEX`, `DROP`.
+  (incl. `ON CONFLICT`), `UPDATE`, `DELETE`, `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, `DROP`.
 * Not covered: PL/SQL and procedural code, `CONNECT BY`, Oracle `(+)` joins, window frames,
-  `IS DISTINCT FROM`, `CREATE VIEW`, `ALTER`.
+  `IS DISTINCT FROM`, `CREATE VIEW`, `ALTER` of anything but tables.
 * The parser is lenient in places (for example `AUTOINCREMENT` is accepted in every dialect).
 * Function catalogs contain names only (no argument types or per-version availability) and
   cover core built-ins; extension functions such as `pg_trgm`'s are *unverified*. The Postgres

@@ -222,6 +222,7 @@ impl<'a> Emitter<'a> {
             Statement::Delete(d) => self.delete(d),
             Statement::CreateTable(c) => self.create_table(c),
             Statement::CreateIndex(c) => self.create_index(c),
+            Statement::AlterTable(a) => self.alter_table(a),
             Statement::Drop(d) => self.drop_stmt(d),
         }
     }
@@ -426,6 +427,113 @@ impl<'a> Emitter<'a> {
             self.need(|d| d.supports_partial_index(), "partial indexes")?;
             out.push_str(&format!(" WHERE {}", self.expr(s)?));
         }
+        Ok(out)
+    }
+
+    fn alter_table(&self, a: &AlterTable) -> R {
+        let oracle = self.target.is_some_and(|d| d.name() == "oracle");
+        let mut out = String::from("ALTER TABLE ");
+        if a.if_exists {
+            self.need(|d| d.name() == "postgres", "ALTER TABLE IF EXISTS")?;
+            out.push_str("IF EXISTS ");
+        }
+        out.push_str(&self.object_name(&a.name));
+        let behavior = |b: &Option<DropBehavior>| match b {
+            Some(DropBehavior::Cascade) => " CASCADE",
+            Some(DropBehavior::Restrict) => " RESTRICT",
+            None => "",
+        };
+        let mut parts = vec![];
+        for act in &a.actions {
+            let only_pg = |what: &str| self.need(|d| d.name() != "sqlite", what);
+            parts.push(match act {
+                AlterAction::AddColumn { if_not_exists, column } => {
+                    let mut p = String::from(if oracle { "ADD " } else { "ADD COLUMN " });
+                    if *if_not_exists {
+                        self.need(|d| d.name() == "postgres", "ADD COLUMN IF NOT EXISTS")?;
+                        p.push_str("IF NOT EXISTS ");
+                    }
+                    p.push_str(&self.column_def(column)?);
+                    p
+                }
+                AlterAction::DropColumn { if_exists, name, behavior: b } => {
+                    let mut p = String::from("DROP COLUMN ");
+                    if *if_exists {
+                        self.need(|d| d.name() == "postgres", "DROP COLUMN IF EXISTS")?;
+                        p.push_str("IF EXISTS ");
+                    }
+                    p.push_str(&self.ident(name));
+                    if !oracle {
+                        p.push_str(behavior(b));
+                    }
+                    p
+                }
+                AlterAction::RenameColumn { old, new } => {
+                    format!("RENAME COLUMN {} TO {}", self.ident(old), self.ident(new))
+                }
+                AlterAction::RenameTable(n) => format!("RENAME TO {}", self.ident(n)),
+                AlterAction::AlterColumnType { name, data_type } => {
+                    only_pg("ALTER COLUMN TYPE")?;
+                    let t = self.data_type(data_type)?;
+                    if oracle {
+                        format!("MODIFY {} {t}", self.ident(name))
+                    } else {
+                        format!("ALTER COLUMN {} TYPE {t}", self.ident(name))
+                    }
+                }
+                AlterAction::SetNotNull(n) => {
+                    only_pg("ALTER COLUMN SET NOT NULL")?;
+                    if oracle {
+                        format!("MODIFY {} NOT NULL", self.ident(n))
+                    } else {
+                        format!("ALTER COLUMN {} SET NOT NULL", self.ident(n))
+                    }
+                }
+                AlterAction::DropNotNull(n) => {
+                    only_pg("ALTER COLUMN DROP NOT NULL")?;
+                    if oracle {
+                        format!("MODIFY {} NULL", self.ident(n))
+                    } else {
+                        format!("ALTER COLUMN {} DROP NOT NULL", self.ident(n))
+                    }
+                }
+                AlterAction::SetDefault { name, default } => {
+                    only_pg("ALTER COLUMN SET DEFAULT")?;
+                    if oracle {
+                        format!("MODIFY {} DEFAULT {}", self.ident(name), self.expr(default)?)
+                    } else {
+                        format!("ALTER COLUMN {} SET DEFAULT {}", self.ident(name), self.expr(default)?)
+                    }
+                }
+                AlterAction::DropDefault(n) => {
+                    only_pg("ALTER COLUMN DROP DEFAULT")?;
+                    if oracle {
+                        format!("MODIFY {} DEFAULT NULL", self.ident(n))
+                    } else {
+                        format!("ALTER COLUMN {} DROP DEFAULT", self.ident(n))
+                    }
+                }
+                AlterAction::AddConstraint(c) => {
+                    only_pg("ADD CONSTRAINT")?;
+                    format!("ADD {}", self.table_constraint(c)?)
+                }
+                AlterAction::DropConstraint { if_exists, name, behavior: b } => {
+                    only_pg("DROP CONSTRAINT")?;
+                    let mut p = String::from("DROP CONSTRAINT ");
+                    if *if_exists {
+                        self.need(|d| d.name() == "postgres", "DROP CONSTRAINT IF EXISTS")?;
+                        p.push_str("IF EXISTS ");
+                    }
+                    p.push_str(&self.ident(name));
+                    if !oracle {
+                        p.push_str(behavior(b));
+                    }
+                    p
+                }
+            });
+        }
+        out.push(' ');
+        out.push_str(&parts.join(", "));
         Ok(out)
     }
 

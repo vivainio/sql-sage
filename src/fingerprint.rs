@@ -483,6 +483,14 @@ impl Collector {
                 StatementKind::Truncate
             }
             Statement::Plsql(_) => StatementKind::Plsql,
+            Statement::If(i) => {
+                self.expr(&i.condition);
+                let kind = self.statement(&i.then);
+                if let Some(e) = &i.otherwise {
+                    self.statement(e);
+                }
+                kind
+            }
             Statement::Other(_) => StatementKind::Other,
             Statement::Drop(d) => {
                 for n in &d.names {

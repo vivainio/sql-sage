@@ -66,6 +66,7 @@ impl Outline {
             | Statement::InsertAll(_)
             | Statement::Other(_)
             | Statement::Plsql(_)
+            | Statement::If(_)
             | Statement::Drop(_) => self.statement(s),
         }
     }

@@ -40,6 +40,13 @@ impl Outline {
             }
             Statement::Other(o) => o.text.clone(),
             Statement::Plsql(u) => u.text.clone(),
+            Statement::If(i) => {
+                let mut out = format!("{}\n{}", self.filter("if", &i.condition), indent(&self.statement(&i.then), 2));
+                if let Some(e) = &i.otherwise {
+                    out.push_str(&format!("\nelse\n{}", indent(&self.statement(e), 2)));
+                }
+                out
+            }
             Statement::Drop(d) => self.drop_stmt(d),
         }
     }

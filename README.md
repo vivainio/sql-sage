@@ -51,7 +51,9 @@ sql-sage -d sqlite --ast-compact "SELECT 1"                  # shorter YAML-like
 sql-sage -d sqlite --ast-debug "SELECT 1"                    # verbose Rust Debug output
 ```
 
-Dialects: `postgres`, `sqlite`, `oracle`. SQL comes from `-f FILE`, an argument, or stdin.
+Dialects: `postgres`, `sqlite`, `oracle`, and `sqlserver` (parse-only: `[bracketed]` identifiers, `GO` batches
+and `IF cond statement`; it is left out of `--compat` and fingerprint codes). SQL comes from `-f FILE`,
+an argument, or stdin.
 
 ## Library
 
@@ -274,8 +276,8 @@ interchange format.
   Packages and object types are not parsed.
 * Accepted but not modeled: `COMMIT`, `GRANT`, `COMMENT ON`, `CALL`, `ALTER` of anything but
   tables, and `CREATE` of anything but the above (synonyms, materialized views, ...).
-* Not covered: Oracle `(+)` joins, window frames, `IS DISTINCT FROM`, and the dialects of other
-  databases (T-SQL `GO`, `[bracketed]` identifiers, ...).
+* Not covered: Oracle `(+)` joins, window frames, `IS DISTINCT FROM`, Oracle packages and object
+  types, and most of T-SQL (variables, `BEGIN ... END`, `TOP`, `OUTPUT`, ...).
 * The parser is lenient in places (for example `AUTOINCREMENT` is accepted in every dialect).
 * Function catalogs contain names only (no argument types or per-version availability) and
   cover core built-ins; extension functions such as `pg_trgm`'s are *unverified*. The Postgres

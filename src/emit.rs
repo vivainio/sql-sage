@@ -232,6 +232,14 @@ impl<'a> Emitter<'a> {
                 t.tables.iter().map(|n| self.object_name(n)).collect::<Vec<_>>().join(", ")
             )),
             Statement::Plsql(u) => Ok(u.text.clone()),
+            Statement::If(i) => {
+                self.need(|d| d.name() == "sqlserver", "IF statements")?;
+                let mut out = format!("IF {} {}", self.expr(&i.condition)?, self.statement(&i.then)?);
+                if let Some(e) = &i.otherwise {
+                    out.push_str(&format!(" ELSE {}", self.statement(e)?));
+                }
+                Ok(out)
+            }
             Statement::Other(o) => {
                 if let (Some(s), Some(t)) = (self.source, self.target) {
                     if s.name() != t.name() {

@@ -22,10 +22,12 @@ fn catalog(kind: DialectKind) -> &'static HashSet<&'static str> {
     static PG: OnceLock<HashSet<&'static str>> = OnceLock::new();
     static LITE: OnceLock<HashSet<&'static str>> = OnceLock::new();
     static ORA: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    static NONE: OnceLock<HashSet<&'static str>> = OnceLock::new();
     match kind {
         DialectKind::Postgres => PG.get_or_init(|| load(POSTGRES)),
         DialectKind::Sqlite => LITE.get_or_init(|| load(SQLITE)),
         DialectKind::Oracle => ORA.get_or_init(|| load(ORACLE)),
+        DialectKind::SqlServer => NONE.get_or_init(HashSet::new),
     }
 }
 

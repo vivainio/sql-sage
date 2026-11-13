@@ -4,7 +4,7 @@ use sql_sage::{check_compatibility, fingerprint_sql, outline_sql, parse_sql, tra
 use std::io::Read;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: sql-sage [-d postgres|sqlite|oracle] [--to postgres|sqlite|oracle|ordered|tight] [--compat TARGET] [--fingerprint] [--schema PATH...] [--check] [--ast | --ast-compact | --ast-debug] [-f FILE | SQL]
+const USAGE: &str = "usage: sql-sage [-d postgres|sqlite|oracle|sqlserver] [--to postgres|sqlite|oracle|ordered|tight] [--compat TARGET] [--fingerprint] [--schema PATH...] [--check] [--ast | --ast-compact | --ast-debug] [-f FILE | SQL]
   reads SQL from FILE, the argument, or stdin
   --to     re-emit for another dialect (errors if inexpressible), or ordered / tight for
            readable non-SQL syntaxes (ordered: words, tight: symbols)

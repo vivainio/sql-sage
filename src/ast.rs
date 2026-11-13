@@ -32,6 +32,8 @@ pub enum Statement {
     Other(Other),
     /// A PL/SQL block, function, procedure or trigger.
     Plsql(Box<PlsqlUnit>),
+    /// T-SQL `IF condition statement [ELSE statement]`.
+    If(IfStatement),
 }
 
 // ---------------------------------------------------------------- queries
@@ -546,6 +548,13 @@ pub enum MergeAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Truncate {
     pub tables: Vec<ObjectName>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfStatement {
+    pub condition: Expr,
+    pub then: Box<Statement>,
+    pub otherwise: Option<Box<Statement>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

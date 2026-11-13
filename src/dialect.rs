@@ -61,6 +61,10 @@ pub trait Dialect: Debug {
     fn supports_physical_clauses(&self) -> bool {
         false
     }
+    /// `GO` on a line of its own separates batches (SQL Server tools).
+    fn supports_go_batches(&self) -> bool {
+        false
+    }
     /// PL/SQL blocks, functions, procedures and triggers.
     fn supports_plsql(&self) -> bool {
         false
@@ -379,6 +383,30 @@ impl Dialect for PostgreSqlDialect {
     }
 }
 
+/// Microsoft SQL Server (T-SQL). Parse-only and minimal: bracketed identifiers, `GO` batches and
+/// `IF cond statement`. It is not part of [`DialectKind::ALL`], so compatibility reports and
+/// fingerprint codes do not cover it.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SqlServerDialect;
+
+impl Dialect for SqlServerDialect {
+    fn name(&self) -> &'static str {
+        "sqlserver"
+    }
+    fn is_identifier_start(&self, ch: char) -> bool {
+        ch.is_alphabetic() || matches!(ch, '_' | '@' | '#')
+    }
+    fn is_identifier_part(&self, ch: char) -> bool {
+        ch.is_alphanumeric() || matches!(ch, '_' | '@' | '#' | '$')
+    }
+    fn is_delimited_identifier_start(&self, ch: char) -> bool {
+        matches!(ch, '"' | '[')
+    }
+    fn supports_go_batches(&self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SqliteDialect;
 
@@ -621,10 +649,13 @@ pub enum DialectKind {
     Postgres,
     Sqlite,
     Oracle,
+    /// Parse-only; see [`SqlServerDialect`].
+    SqlServer,
 }
 
 impl DialectKind {
-    /// Every supported dialect, in the order used by compatibility codes.
+    /// Every dialect that compatibility reports and fingerprint codes cover, in that order
+    /// (SQL Server is parse-only and is not among them).
     pub const ALL: [DialectKind; 3] = [DialectKind::Oracle, DialectKind::Postgres, DialectKind::Sqlite];
 
     pub fn name(self) -> &'static str {
@@ -632,6 +663,7 @@ impl DialectKind {
             DialectKind::Oracle => "oracle",
             DialectKind::Postgres => "postgres",
             DialectKind::Sqlite => "sqlite",
+            DialectKind::SqlServer => "sqlserver",
         }
     }
 
@@ -641,6 +673,7 @@ impl DialectKind {
             DialectKind::Oracle => "ora",
             DialectKind::Postgres => "pg",
             DialectKind::Sqlite => "lite",
+            DialectKind::SqlServer => "mssql",
         }
     }
 
@@ -649,6 +682,7 @@ impl DialectKind {
             DialectKind::Postgres => Box::new(PostgreSqlDialect),
             DialectKind::Sqlite => Box::new(SqliteDialect),
             DialectKind::Oracle => Box::new(OracleDialect),
+            DialectKind::SqlServer => Box::new(SqlServerDialect),
         }
     }
 }
@@ -660,7 +694,8 @@ impl FromStr for DialectKind {
             "postgres" | "postgresql" | "pg" => Ok(Self::Postgres),
             "sqlite" | "sqlite3" | "lite" => Ok(Self::Sqlite),
             "oracle" | "plsql" | "ora" => Ok(Self::Oracle),
-            other => Err(format!("unknown dialect '{other}' (expected postgres, sqlite or oracle)")),
+            "sqlserver" | "mssql" | "tsql" => Ok(Self::SqlServer),
+            other => Err(format!("unknown dialect '{other}' (expected postgres, sqlite, oracle or sqlserver)")),
         }
     }
 }

@@ -201,6 +201,7 @@ impl Schema {
             | Statement::Merge(_)
             | Statement::InsertAll(_)
             | Statement::Plsql(_)
+            | Statement::If(_)
             | Statement::Truncate(_)
             | Statement::Other(_) => Ok(()),
         }

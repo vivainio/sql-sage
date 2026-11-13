@@ -225,6 +225,14 @@ impl<'a> Parser<'a> {
             if *self.peek_token() == Token::Eof {
                 return out;
             }
+            if self.is_batch_go(self.index) {
+                // `GO [count]`
+                let line = self.line_of(self.index);
+                while *self.peek_token() != Token::Eof && self.line_of(self.index) == line {
+                    self.index += 1;
+                }
+                continue;
+            }
             if self.dialect.supports_sqlplus_commands() && self.skip_sqlplus_command() {
                 continue;
             }
@@ -236,7 +244,10 @@ impl<'a> Parser<'a> {
             let start = self.index;
             let at = self.location();
             let result = self.parse_statement().and_then(|s| {
-                if matches!(self.peek_token(), Token::Semicolon | Token::Eof) || self.is_sqlplus_slash(self.index) {
+                if matches!(self.peek_token(), Token::Semicolon | Token::Eof)
+                    || self.is_sqlplus_slash(self.index)
+                    || self.is_batch_go(self.index)
+                {
                     Ok(s)
                 } else {
                     self.expected("end of statement")
@@ -393,7 +404,9 @@ impl<'a> Parser<'a> {
         if self.peek_query_start() || *self.peek_token() == Token::LParen {
             return Ok(Statement::Query(Box::new(self.parse_query()?)));
         }
-        if self.dialect.supports_plsql() && self.is_plsql_start() {
+        if self.dialect.supports_go_batches() && self.peek_keyword("IF") {
+            self.parse_tsql_if()
+        } else if self.dialect.supports_plsql() && self.is_plsql_start() {
             self.parse_plsql_unit()
         } else if self.peek_keyword("INSERT")
             && (self.peek_nth_keyword(1, "ALL")
@@ -607,6 +620,7 @@ impl<'a> Parser<'a> {
             match self.peek_token() {
                 Token::Eof => break,
                 Token::Semicolon if depth == 0 => break,
+                Token::Word(_) if depth == 0 && self.is_batch_go(self.index) => break,
                 Token::LParen => depth += 1,
                 Token::RParen => depth = depth.saturating_sub(1),
                 _ => {}
@@ -637,6 +651,23 @@ impl<'a> Parser<'a> {
             prev = Some(t);
         }
         out
+    }
+
+    /// T-SQL `IF condition statement [ELSE statement]`.
+    fn parse_tsql_if(&mut self) -> Result<Statement> {
+        self.expect_keyword("IF")?;
+        let condition = self.parse_expr()?;
+        let then = Box::new(self.parse_statement()?);
+        let otherwise = if self.parse_keyword("ELSE") { Some(Box::new(self.parse_statement()?)) } else { None };
+        Ok(Statement::If(IfStatement { condition, then, otherwise }))
+    }
+
+    /// Is the token at `index` a `GO` batch separator: alone on its line (a count may follow)?
+    fn is_batch_go(&self, index: usize) -> bool {
+        self.dialect.supports_go_batches()
+            && index < self.tokens.len()
+            && matches!(&self.tokens[index].token, Token::Word(w) if w.is_keyword("GO"))
+            && self.starts_line(index)
     }
 
     fn parse_returning(&mut self) -> Result<Vec<SelectItem>> {
@@ -1757,6 +1788,9 @@ impl<'a> Parser<'a> {
                 && self.dialect.supports_physical_clauses()
                 && self.index > 0
                 && matches!(&self.tokens[self.index - 1].token, Token::Word(p) if p.is_keyword("END"));
+            if self.is_batch_go(self.index) {
+                return Ok(None);
+            }
             let hierarchy_clause = self.dialect.supports_connect_by()
                 && w.quote.is_none()
                 && ((w.is_keyword("START") && self.peek_nth_keyword(1, "WITH"))

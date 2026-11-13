@@ -50,6 +50,14 @@ const RESERVED: &[&str] = &[
     "DO",
 ];
 
+/// Result of [`Parser::parse_statements_lenient`].
+#[derive(Debug)]
+pub struct Lenient {
+    pub statements: Vec<(Statement, Location)>,
+    /// Statements that did not parse: where each starts, and why.
+    pub skipped: Vec<(Location, ParseError)>,
+}
+
 pub struct Parser<'a> {
     dialect: &'a dyn Dialect,
     tokens: Vec<TokenWithLocation>,
@@ -184,6 +192,92 @@ impl<'a> Parser<'a> {
             stmts.push((self.parse_statement()?, at));
             if !matches!(self.peek_token(), Token::Semicolon | Token::Eof) {
                 return self.expected("end of statement");
+            }
+        }
+    }
+
+    /// Parses as many statements as possible. A statement that does not parse is skipped (up to
+    /// the next `;`, or for PL/SQL units up to the next `/` line) and reported in
+    /// [`Lenient::skipped`] instead of stopping the parse. For dialects with SQL*Plus commands,
+    /// those (`SET ...`, `WHENEVER ...`, a lone `/`) are skipped silently.
+    pub fn parse_statements_lenient(&mut self) -> Lenient {
+        let mut out = Lenient { statements: vec![], skipped: vec![] };
+        loop {
+            while self.consume_token(&Token::Semicolon) {}
+            if *self.peek_token() == Token::Eof {
+                return out;
+            }
+            if self.dialect.supports_sqlplus_commands() && self.skip_sqlplus_command() {
+                continue;
+            }
+            let start = self.index;
+            let at = self.location();
+            let result = self.parse_statement().and_then(|s| {
+                if matches!(self.peek_token(), Token::Semicolon | Token::Eof) {
+                    Ok(s)
+                } else {
+                    self.expected("end of statement")
+                }
+            });
+            match result {
+                Ok(s) => out.statements.push((s, at)),
+                Err(e) => {
+                    out.skipped.push((at, e));
+                    self.index = start;
+                    self.recover();
+                }
+            }
+        }
+    }
+
+    fn line_of(&self, index: usize) -> usize {
+        self.tokens[index.min(self.tokens.len() - 1)].location.line
+    }
+
+    /// Is the token at `index` the first one on its line?
+    fn starts_line(&self, index: usize) -> bool {
+        index == 0 || self.line_of(index - 1) < self.line_of(index)
+    }
+
+    fn skip_sqlplus_command(&mut self) -> bool {
+        let lone_slash = *self.peek_token() == Token::Slash && self.starts_line(self.index);
+        let command = ["SET", "WHENEVER", "SPOOL", "PROMPT", "EXIT", "DEFINE", "UNDEFINE", "REM"]
+            .iter()
+            .any(|k| self.peek_keyword(k));
+        if !(lone_slash || command) {
+            return false;
+        }
+        let line = self.line_of(self.index);
+        while *self.peek_token() != Token::Eof && self.line_of(self.index) == line {
+            self.index += 1;
+        }
+        true
+    }
+
+    /// Moves past the statement that starts at the current token and failed to parse.
+    fn recover(&mut self) {
+        let plsql = self.peek_keyword("DECLARE")
+            || self.peek_keyword("BEGIN")
+            || (self.peek_keyword("CREATE") && {
+                let mut i = 1;
+                while ["OR", "REPLACE", "EDITIONABLE", "NONEDITIONABLE"].iter().any(|k| self.peek_nth_keyword(i, k)) {
+                    i += 1;
+                }
+                ["FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE", "TYPE"].iter().any(|k| self.peek_nth_keyword(i, k))
+            });
+        self.index += 1;
+        loop {
+            match self.peek_token() {
+                Token::Eof => return,
+                Token::Slash if plsql && self.starts_line(self.index) => {
+                    self.index += 1;
+                    return;
+                }
+                Token::Semicolon if !plsql => {
+                    self.index += 1;
+                    return;
+                }
+                _ => self.index += 1,
             }
         }
     }
@@ -426,28 +520,42 @@ impl<'a> Parser<'a> {
 
     fn parse_drop(&mut self) -> Result<Statement> {
         self.expect_keyword("DROP")?;
-        let object_type = match self.parse_one_of_keywords(&["TABLE", "VIEW", "INDEX"]) {
+        let object_type = match self.parse_one_of_keywords(&["TABLE", "VIEW", "INDEX", "SEQUENCE"]) {
             Some("TABLE") => ObjectType::Table,
             Some("VIEW") => ObjectType::View,
-            Some(_) => ObjectType::Index,
-            None => return self.expected("TABLE, VIEW or INDEX"),
+            Some("INDEX") => ObjectType::Index,
+            Some(_) => ObjectType::Sequence,
+            None => return self.expected("TABLE, VIEW, INDEX or SEQUENCE"),
         };
         let if_exists = self.parse_keywords(&["IF", "EXISTS"]);
         let names = self.parse_comma_separated(Self::parse_object_name)?;
-        let behavior = match self.parse_one_of_keywords(&["CASCADE", "RESTRICT"]) {
-            Some("CASCADE") => Some(DropBehavior::Cascade),
-            Some(_) => Some(DropBehavior::Restrict),
-            None => None,
-        };
+        let behavior = self.parse_drop_behavior();
+        if self.dialect.supports_physical_clauses() {
+            // Oracle: CASCADE CONSTRAINTS, PURGE
+            self.parse_keyword("CONSTRAINTS");
+            self.parse_keyword("PURGE");
+        }
         Ok(Statement::Drop(Drop { object_type, if_exists, names, behavior }))
     }
 
     fn parse_create(&mut self) -> Result<Statement> {
         self.expect_keyword("CREATE")?;
+        let or_replace = self.parse_keywords(&["OR", "REPLACE"]);
+        let force = self.parse_keyword("FORCE");
+        let _ = self.parse_one_of_keywords(&["EDITIONABLE", "NONEDITIONABLE"]);
         let temporary = self.parse_keywords(&["GLOBAL", "TEMPORARY"])
             || self.parse_keyword("TEMPORARY")
             || self.parse_keyword("TEMP");
         let unique = self.parse_keyword("UNIQUE");
+        if self.parse_keyword("VIEW") {
+            if temporary || unique {
+                return self.error("TEMPORARY and UNIQUE are not valid before VIEW");
+            }
+            return self.parse_create_view(or_replace, force);
+        }
+        if or_replace || force {
+            return self.expected("VIEW");
+        }
         if self.parse_keyword("TABLE") {
             if unique {
                 return self.error("UNIQUE is only valid before INDEX");
@@ -458,9 +566,81 @@ impl<'a> Parser<'a> {
                 return self.error("TEMPORARY is not valid before INDEX");
             }
             self.parse_create_index(unique)
+        } else if !temporary && !unique && self.parse_keyword("SEQUENCE") {
+            self.parse_create_sequence()
         } else {
-            self.expected("TABLE or INDEX")
+            self.expected("TABLE, INDEX, SEQUENCE or VIEW")
         }
+    }
+
+    fn parse_create_view(&mut self, or_replace: bool, force: bool) -> Result<Statement> {
+        let name = self.parse_object_name()?;
+        let columns = if *self.peek_token() == Token::LParen { self.parse_paren_idents()? } else { vec![] };
+        self.expect_keyword("AS")?;
+        let query = Box::new(self.parse_query()?);
+        if self.dialect.supports_physical_clauses() && self.parse_keyword("WITH") {
+            // WITH READ ONLY | WITH CHECK OPTION [CONSTRAINT name]
+            if self.parse_keywords(&["READ", "ONLY"]) {
+            } else if self.parse_keywords(&["CHECK", "OPTION"]) {
+                if self.parse_keyword("CONSTRAINT") {
+                    self.parse_ident()?;
+                }
+            } else {
+                return self.expected("READ ONLY or CHECK OPTION");
+            }
+        }
+        Ok(Statement::CreateView(CreateView { or_replace, force, name, columns, query }))
+    }
+
+    fn parse_signed_number(&mut self) -> Result<String> {
+        let neg = self.consume_token(&Token::Minus);
+        if !neg {
+            self.consume_token(&Token::Plus);
+        }
+        match self.peek_token().clone() {
+            Token::Number(n) => {
+                self.index += 1;
+                Ok(if neg { format!("-{n}") } else { n })
+            }
+            _ => self.expected("a number"),
+        }
+    }
+
+    fn parse_create_sequence(&mut self) -> Result<Statement> {
+        let if_not_exists = self.parse_keywords(&["IF", "NOT", "EXISTS"]);
+        let name = self.parse_object_name()?;
+        let mut options = vec![];
+        loop {
+            let opt = if self.parse_keywords(&["START", "WITH"]) || self.parse_keyword("START") {
+                SequenceOption::StartWith(self.parse_signed_number()?)
+            } else if self.parse_keywords(&["INCREMENT", "BY"]) || self.parse_keyword("INCREMENT") {
+                SequenceOption::IncrementBy(self.parse_signed_number()?)
+            } else if self.parse_keyword("MINVALUE") {
+                SequenceOption::MinValue(Some(self.parse_signed_number()?))
+            } else if self.parse_keyword("NOMINVALUE") || self.parse_keywords(&["NO", "MINVALUE"]) {
+                SequenceOption::MinValue(None)
+            } else if self.parse_keyword("MAXVALUE") {
+                SequenceOption::MaxValue(Some(self.parse_signed_number()?))
+            } else if self.parse_keyword("NOMAXVALUE") || self.parse_keywords(&["NO", "MAXVALUE"]) {
+                SequenceOption::MaxValue(None)
+            } else if self.parse_keyword("CYCLE") {
+                SequenceOption::Cycle(true)
+            } else if self.parse_keyword("NOCYCLE") || self.parse_keywords(&["NO", "CYCLE"]) {
+                SequenceOption::Cycle(false)
+            } else if self.parse_keyword("CACHE") {
+                SequenceOption::Cache(Some(self.parse_signed_number()?))
+            } else if self.parse_keyword("NOCACHE") {
+                SequenceOption::Cache(None)
+            } else if self.parse_keyword("ORDER") {
+                SequenceOption::Order(true)
+            } else if self.parse_keyword("NOORDER") {
+                SequenceOption::Order(false)
+            } else {
+                break;
+            };
+            options.push(opt);
+        }
+        Ok(Statement::CreateSequence(CreateSequence { if_not_exists, name, options }))
     }
 
     fn parse_create_index(&mut self, unique: bool) -> Result<Statement> {
@@ -471,6 +651,7 @@ impl<'a> Parser<'a> {
         self.expect_token(&Token::LParen)?;
         let columns = self.parse_comma_separated(Self::parse_order_by_expr)?;
         self.expect_token(&Token::RParen)?;
+        self.skip_physical_clauses()?;
         let selection = if self.parse_keyword("WHERE") { Some(self.parse_expr()?) } else { None };
         Ok(Statement::CreateIndex(CreateIndex { unique, if_not_exists, name, table, columns, selection }))
     }
@@ -494,7 +675,166 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect_token(&Token::RParen)?;
+        self.skip_physical_clauses()?;
         Ok(Statement::CreateTable(CreateTable { temporary, if_not_exists, name, columns, constraints }))
+    }
+
+    fn parse_generated_expr(&mut self) -> Result<ColumnOption> {
+        self.expect_token(&Token::LParen)?;
+        let expr = self.parse_expr()?;
+        self.expect_token(&Token::RParen)?;
+        let stored = match self.parse_one_of_keywords(&["VIRTUAL", "STORED"]) {
+            Some(k) => k == "STORED",
+            None => false,
+        };
+        Ok(ColumnOption::Generated { expr, stored })
+    }
+
+    /// Skips a balanced `( ... )` group.
+    fn skip_balanced_parens(&mut self) -> Result<()> {
+        self.expect_token(&Token::LParen)?;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.next_token() {
+                Token::LParen => depth += 1,
+                Token::RParen => depth -= 1,
+                Token::Eof => return self.expected("')'"),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Accepts and ignores storage and other physical clauses (`TABLESPACE x`, `PCTFREE 10`,
+    /// `COMPRESS ADVANCED`, `ROW STORE COMPRESS`, `LOGGING`, `LOB (c) STORE AS ...`, ...) after
+    /// a table body or an index column list. They do not change the logical schema.
+    fn skip_physical_clauses(&mut self) -> Result<()> {
+        if !self.dialect.supports_physical_clauses() {
+            return Ok(());
+        }
+        loop {
+            let Token::Word(w) = self.peek_token() else { return Ok(()) };
+            if w.quote.is_some() {
+                return Ok(());
+            }
+            let kw = w.value.to_ascii_uppercase();
+            let next_is = |p: &Self, k: &str| p.peek_nth_keyword(1, k);
+            match kw.as_str() {
+                "TABLESPACE" => {
+                    self.index += 1;
+                    self.parse_ident()?;
+                }
+                "PCTFREE" | "PCTUSED" | "INITRANS" | "MAXTRANS" => {
+                    self.index += 1;
+                    self.parse_signed_number()?;
+                }
+                "STORAGE" => {
+                    self.index += 1;
+                    self.skip_balanced_parens()?;
+                }
+                "LOGGING" | "NOLOGGING" | "NOCOMPRESS" | "NOPARALLEL" | "CACHE" | "NOCACHE" | "MONITORING"
+                | "NOMONITORING" | "NOSORT" | "REVERSE" | "VISIBLE" | "INVISIBLE" | "NOROWDEPENDENCIES"
+                | "ROWDEPENDENCIES" => self.index += 1,
+                "COMPRESS" => {
+                    self.index += 1;
+                    self.skip_compress_options();
+                }
+                "PARALLEL" => {
+                    self.index += 1;
+                    if matches!(self.peek_token(), Token::Number(_)) {
+                        self.index += 1;
+                    }
+                }
+                "ROW" | "COLUMN" if next_is(self, "STORE") => {
+                    self.index += 2;
+                    if self.parse_keyword("COMPRESS") {
+                        self.skip_compress_options();
+                    }
+                }
+                "SEGMENT" => {
+                    self.index += 1;
+                    self.expect_keyword("CREATION")?;
+                    if self.parse_one_of_keywords(&["IMMEDIATE", "DEFERRED"]).is_none() {
+                        return self.expected("IMMEDIATE or DEFERRED");
+                    }
+                }
+                "ENABLE" | "DISABLE" if next_is(self, "ROW") => {
+                    self.index += 1;
+                    self.expect_keyword("ROW")?;
+                    self.expect_keyword("MOVEMENT")?;
+                }
+                "ON" if next_is(self, "COMMIT") => {
+                    self.index += 2;
+                    if self.parse_one_of_keywords(&["PRESERVE", "DELETE"]).is_none() {
+                        return self.expected("PRESERVE or DELETE");
+                    }
+                    self.expect_keyword("ROWS")?;
+                }
+                "ORGANIZATION" => {
+                    self.index += 1;
+                    if self.parse_one_of_keywords(&["HEAP", "INDEX"]).is_none() {
+                        return self.expected("HEAP or INDEX");
+                    }
+                }
+                "LOB" => {
+                    self.index += 1;
+                    self.skip_balanced_parens()?;
+                    self.expect_keyword("STORE")?;
+                    self.expect_keyword("AS")?;
+                    let _ = self.parse_one_of_keywords(&["SECUREFILE", "BASICFILE"]);
+                    if matches!(self.peek_token(), Token::Word(_)) && *self.peek_nth(1) == Token::LParen {
+                        self.index += 1;
+                    }
+                    if *self.peek_token() == Token::LParen {
+                        self.skip_balanced_parens()?;
+                    }
+                }
+                _ => return Ok(()),
+            }
+        }
+    }
+
+    fn skip_compress_options(&mut self) {
+        const WORDS: [&str; 11] =
+            ["BASIC", "ADVANCED", "LOW", "HIGH", "FOR", "OLTP", "QUERY", "ARCHIVE", "DIRECT_LOAD", "OPERATIONS", "ALL"];
+        loop {
+            match self.peek_token() {
+                Token::Number(_) => self.index += 1,
+                Token::Word(w) if WORDS.iter().any(|k| w.is_keyword(k)) => self.index += 1,
+                _ => return,
+            }
+        }
+    }
+
+    /// Accepts and ignores constraint attributes: `USING INDEX ...`, `ENABLE`, `DISABLE`,
+    /// `VALIDATE`, `NOVALIDATE`, `RELY`, `DEFERRABLE`, `INITIALLY ...`.
+    fn skip_constraint_attributes(&mut self) -> Result<()> {
+        if !self.dialect.supports_physical_clauses() {
+            return Ok(());
+        }
+        loop {
+            if self.peek_keyword("USING") && self.peek_nth_keyword(1, "INDEX") {
+                self.index += 2;
+                if *self.peek_token() == Token::LParen {
+                    self.skip_balanced_parens()?;
+                } else {
+                    self.skip_physical_clauses()?;
+                }
+            } else if (self.peek_keyword("ENABLE") || self.peek_keyword("DISABLE")) && !self.peek_nth_keyword(1, "ROW")
+            {
+                self.index += 1;
+            } else if self.parse_one_of_keywords(&["VALIDATE", "NOVALIDATE", "RELY", "NORELY", "DEFERRABLE"]).is_some()
+            {
+            } else if self.peek_keyword("NOT") && self.peek_nth_keyword(1, "DEFERRABLE") {
+                self.index += 2;
+            } else if self.parse_keyword("INITIALLY") {
+                if self.parse_one_of_keywords(&["DEFERRED", "IMMEDIATE"]).is_none() {
+                    return self.expected("DEFERRED or IMMEDIATE");
+                }
+            } else {
+                return Ok(());
+            }
+        }
     }
 
     fn parse_paren_idents(&mut self) -> Result<Vec<Ident>> {
@@ -522,6 +862,7 @@ impl<'a> Parser<'a> {
         } else {
             return self.expected("PRIMARY KEY, UNIQUE, FOREIGN KEY or CHECK");
         };
+        self.skip_constraint_attributes()?;
         Ok(TableConstraint { name, kind })
     }
 
@@ -587,6 +928,9 @@ impl<'a> Parser<'a> {
             } else if self.parse_keyword("NULL") {
                 ColumnOption::Null
             } else if self.parse_keyword("DEFAULT") {
+                if self.dialect.supports_physical_clauses() {
+                    self.parse_keywords(&["ON", "NULL"]);
+                }
                 ColumnOption::Default(self.parse_expr()?)
             } else if self.parse_keywords(&["PRIMARY", "KEY"]) {
                 ColumnOption::PrimaryKey
@@ -607,19 +951,29 @@ impl<'a> Parser<'a> {
                 let always = if self.parse_keyword("ALWAYS") {
                     true
                 } else if self.parse_keywords(&["BY", "DEFAULT"]) {
+                    self.parse_keywords(&["ON", "NULL"]);
                     false
                 } else {
                     return self.expected("ALWAYS or BY DEFAULT");
                 };
                 self.expect_keyword("AS")?;
-                self.expect_keyword("IDENTITY")?;
-                ColumnOption::Identity { always }
+                if self.parse_keyword("IDENTITY") {
+                    if *self.peek_token() == Token::LParen {
+                        self.skip_balanced_parens()?;
+                    }
+                    ColumnOption::Identity { always }
+                } else {
+                    self.parse_generated_expr()?
+                }
+            } else if self.dialect.supports_physical_clauses() && self.parse_keyword("AS") {
+                self.parse_generated_expr()?
             } else if cname.is_some() {
                 return self.expected("a column constraint");
             } else {
                 break;
             };
             options.push(ColumnOptionDef { name: cname, option });
+            self.skip_constraint_attributes()?;
         }
         Ok(ColumnDef { name, data_type, options })
     }

@@ -13,7 +13,7 @@
 //! let errors = schema
 //!     .apply_sql("CREATE TABLE t (id int PRIMARY KEY); ALTER TABLE t ADD COLUMN name text NOT NULL;")
 //!     .unwrap();
-//! assert!(errors.is_empty());
+//! assert!(errors.errors.is_empty() && errors.skipped.is_empty());
 //! assert_eq!(
 //!     schema.to_sql(DialectKind::Postgres).unwrap(),
 //!     "CREATE TABLE t (id INT PRIMARY KEY, name TEXT NOT NULL);"
@@ -56,6 +56,17 @@ pub struct Schema {
     fold: IdentifierFold,
     tables: Vec<CreateTable>,
     indexes: Vec<CreateIndex>,
+    sequences: Vec<CreateSequence>,
+    views: Vec<CreateView>,
+}
+
+/// What [`Schema::apply_sql`] did with its input.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// Statements that parsed but could not apply (a missing table, a duplicate column, ...).
+    pub errors: Vec<SchemaError>,
+    /// Statements that did not parse (PL/SQL, unsupported syntax); they are left out of the schema.
+    pub skipped: Vec<SchemaError>,
 }
 
 fn key(fold: IdentifierFold, id: &Ident) -> String {
@@ -85,7 +96,14 @@ fn index_uses(fold: IdentifierFold, i: &CreateIndex, col: &str) -> bool {
 impl Schema {
     /// An empty schema; `kind` decides how identifiers are matched and how input is parsed.
     pub fn new(kind: DialectKind) -> Self {
-        Schema { kind, fold: kind.dialect().identifier_fold(), tables: vec![], indexes: vec![] }
+        Schema {
+            kind,
+            fold: kind.dialect().identifier_fold(),
+            tables: vec![],
+            indexes: vec![],
+            sequences: vec![],
+            views: vec![],
+        }
     }
 
     /// Tables in creation order.
@@ -95,6 +113,14 @@ impl Schema {
 
     pub fn indexes(&self) -> &[CreateIndex] {
         &self.indexes
+    }
+
+    pub fn sequences(&self) -> &[CreateSequence] {
+        &self.sequences
+    }
+
+    pub fn views(&self) -> &[CreateView] {
+        &self.views
     }
 
     pub fn table(&self, name: &str) -> Option<&CreateTable> {
@@ -112,19 +138,24 @@ impl Schema {
         self.tables.iter().position(|t| self.k(last(&t.name)) == k)
     }
 
-    /// Parses `sql` and applies every statement. A syntax error aborts (nothing after it is
-    /// applied); statements that parse but cannot apply are returned and skipped.
-    pub fn apply_sql(&mut self, sql: &str) -> Result<Vec<SchemaError>, ParseError> {
+    /// Parses `sql` and applies every statement. Statements that do not parse are skipped (see
+    /// [`Applied::skipped`]); statements that parse but cannot apply are reported in
+    /// [`Applied::errors`] and leave the schema unchanged. Only a lexical error (an unterminated
+    /// string, say) is returned as `Err`, and nothing is applied then.
+    pub fn apply_sql(&mut self, sql: &str) -> Result<Applied, ParseError> {
         let dialect = self.kind.dialect();
-        let stmts = crate::parser::Parser::new(dialect.as_ref(), sql)?.parse_statements_located()?;
-        let mut errors = vec![];
-        for (s, at) in stmts {
+        let parsed = crate::parser::Parser::new(dialect.as_ref(), sql)?.parse_statements_lenient();
+        let mut applied = Applied::default();
+        for (at, e) in parsed.skipped {
+            applied.skipped.push(SchemaError { message: e.to_string(), location: Some(at) });
+        }
+        for (s, at) in parsed.statements {
             if let Err(mut e) = self.apply(&s) {
                 e.location = Some(at);
-                errors.push(e);
+                applied.errors.push(e);
             }
         }
-        Ok(errors)
+        Ok(applied)
     }
 
     /// Applies one statement. On error the schema is left unchanged by that statement.
@@ -132,6 +163,8 @@ impl Schema {
         match stmt {
             Statement::CreateTable(c) => self.create_table(c),
             Statement::CreateIndex(c) => self.create_index(c),
+            Statement::CreateSequence(c) => self.create_sequence(c),
+            Statement::CreateView(c) => self.create_view(c),
             Statement::AlterTable(a) => self.alter_table(a),
             Statement::Drop(d) => self.drop(d),
             Statement::Query(_) | Statement::Insert(_) | Statement::Update(_) | Statement::Delete(_) => Ok(()),
@@ -171,10 +204,50 @@ impl Schema {
         Ok(())
     }
 
+    fn create_sequence(&mut self, c: &CreateSequence) -> Result<(), SchemaError> {
+        let k = self.k(last(&c.name));
+        if self.sequences.iter().any(|x| self.k(last(&x.name)) == k) {
+            return if c.if_not_exists {
+                Ok(())
+            } else {
+                err(format!("sequence {} already exists", last(&c.name).value))
+            };
+        }
+        let mut c = c.clone();
+        c.if_not_exists = false;
+        self.sequences.push(c);
+        Ok(())
+    }
+
+    fn create_view(&mut self, c: &CreateView) -> Result<(), SchemaError> {
+        let k = self.k(last(&c.name));
+        match self.views.iter().position(|x| self.k(last(&x.name)) == k) {
+            Some(i) if c.or_replace => self.views[i] = c.clone(),
+            Some(_) => return err(format!("view {} already exists", last(&c.name).value)),
+            None => self.views.push(c.clone()),
+        }
+        Ok(())
+    }
+
     fn drop(&mut self, d: &Drop) -> Result<(), SchemaError> {
         for name in &d.names {
             match d.object_type {
-                ObjectType::View => {}
+                // Views that failed to parse are not tracked, so dropping an unknown one is fine.
+                ObjectType::View => {
+                    let k = self.k(last(name));
+                    let fold = self.fold;
+                    self.views.retain(|v| key(fold, last(&v.name)) != k);
+                }
+                ObjectType::Sequence => {
+                    let k = self.k(last(name));
+                    match self.sequences.iter().position(|x| self.k(last(&x.name)) == k) {
+                        Some(i) => {
+                            self.sequences.remove(i);
+                        }
+                        None if d.if_exists => {}
+                        None => return err(format!("sequence {} does not exist", last(name).value)),
+                    }
+                }
                 ObjectType::Table => match self.find_table(name) {
                     Some(i) => {
                         let t = self.tables.remove(i);
@@ -440,15 +513,21 @@ impl Schema {
         false
     }
 
-    /// The schema as `CREATE TABLE` / `CREATE INDEX` statements for `target`, one per line.
+    /// The schema as `CREATE SEQUENCE`, `CREATE TABLE`, `CREATE INDEX` and `CREATE VIEW` statements for `target`, one per line.
     pub fn to_sql(&self, target: DialectKind) -> Result<String, EmitError> {
         let d = target.dialect();
         let mut out = vec![];
+        for q in &self.sequences {
+            out.push(format!("{};", Statement::CreateSequence(q.clone()).to_sql(d.as_ref())?));
+        }
         for t in &self.tables {
             out.push(format!("{};", Statement::CreateTable(t.clone()).to_sql(d.as_ref())?));
         }
         for i in &self.indexes {
             out.push(format!("{};", Statement::CreateIndex(i.clone()).to_sql(d.as_ref())?));
+        }
+        for v in &self.views {
+            out.push(format!("{};", Statement::CreateView(v.clone()).to_sql(d.as_ref())?));
         }
         Ok(out.join("\n"))
     }

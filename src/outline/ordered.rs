@@ -30,6 +30,8 @@ impl Outline {
             Statement::Delete(d) => self.delete(d),
             Statement::CreateTable(c) => self.create_table(c),
             Statement::CreateIndex(c) => self.create_index(c),
+            Statement::CreateSequence(c) => self.create_sequence(c),
+            Statement::CreateView(c) => self.create_view(c),
             Statement::AlterTable(a) => self.alter_table(a),
             Statement::Drop(d) => self.drop_stmt(d),
         }
@@ -167,6 +169,9 @@ impl Outline {
             ColumnOption::Identity { always } => {
                 format!("identity {}", if *always { "always" } else { "by default" })
             }
+            ColumnOption::Generated { expr, stored } => {
+                format!("generated ({}){}", self.expr(expr), if *stored { " stored" } else { "" })
+            }
             ColumnOption::References(r) => format!("references {}", self.fk(r)),
             ColumnOption::Check(e) => format!("check ({})", self.expr(e)),
             ColumnOption::Collate(c) => format!("collate {}", self.id(c)),
@@ -221,6 +226,31 @@ impl Outline {
         s
     }
 
+    pub(super) fn create_sequence(&self, c: &CreateSequence) -> String {
+        let mut lines = vec![format!(
+            "create sequence {}{}",
+            self.name(&c.name),
+            if c.if_not_exists { " if not exists" } else { "" }
+        )];
+        for o in &c.options {
+            lines.push(indent(&o.text().to_lowercase(), 2));
+        }
+        lines.join("\n")
+    }
+
+    pub(super) fn create_view(&self, c: &CreateView) -> String {
+        let mut head = format!(
+            "create {}{}view {}",
+            if c.or_replace { "or replace " } else { "" },
+            if c.force { "force " } else { "" },
+            self.name(&c.name)
+        );
+        if !c.columns.is_empty() {
+            head.push_str(&format!(" ({})", self.ids(&c.columns)));
+        }
+        format!("{head} as\n{}", indent(&self.query(&c.query), 2))
+    }
+
     pub(super) fn alter_table(&self, a: &AlterTable) -> String {
         let mut lines =
             vec![format!("alter table {}{}", self.name(&a.name), if a.if_exists { " if exists" } else { "" })];
@@ -256,6 +286,7 @@ impl Outline {
             ObjectType::Table => "table",
             ObjectType::View => "view",
             ObjectType::Index => "index",
+            ObjectType::Sequence => "sequence",
         };
         let names = d.names.iter().map(|n| self.name(n)).collect::<Vec<_>>().join(", ");
         let mut s = format!("drop {t} {names}");

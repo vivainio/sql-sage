@@ -167,7 +167,8 @@ and `compat_code()` on the result.
 
 ## Schema from migrations
 
-`--schema` simulates DDL: it applies `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX` and `DROP`
+`--schema` simulates DDL: it applies `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, `CREATE SEQUENCE`,
+`CREATE VIEW` and `DROP`
 from the given files in order (directories contribute their `*.sql` files, sorted) and prints
 the resulting schema as `CREATE` statements. `--to` picks the output dialect.
 
@@ -179,12 +180,21 @@ CREATE TABLE orders (id INT PRIMARY KEY, user_id INT REFERENCES accounts (id));
 CREATE INDEX ix_o ON orders (user_id);
 ```
 
+Statements that do not parse (PL/SQL blocks, functions, triggers, unsupported syntax) are skipped
+instead of stopping the run: a summary goes to stderr, `-v` lists each one, and they do not affect
+the exit code. In Oracle scripts, SQL*Plus commands (`SET`, `WHENEVER`, a lone `/`), a leading BOM,
+`N'...'` strings and physical clauses (`TABLESPACE`, `PCTFREE`, `COMPRESS ...`, `ROW STORE ...`,
+`USING INDEX ...`, `ENABLE`/`NOVALIDATE`, `LOB (...) STORE AS ...`) are understood; the physical
+clauses are accepted but dropped from the dump. A PL/SQL unit is skipped up to the next line that
+holds only `/`. DDL inside `EXECUTE IMMEDIATE` or other PL/SQL is therefore invisible.
+
 Migrations that cannot apply (dropping a missing column, creating a table twice, ...) are
 reported on stderr and skipped, and the exit code is 1. Dropping a column also drops the
 constraints and indexes that use it; renaming a table or column updates references to it.
 `DROP CONSTRAINT` also understands PostgreSQL's generated names (`t_pkey`, `t_col_key`,
 `t_col_fkey`). Names match on their last part (`public.t` is `t`). Queries and DML are ignored;
-views, sequences and procedural code are not modeled. From Rust: `sql_sage::schema::Schema`.
+materialized views, `CREATE TABLE ... AS SELECT`, partitioning and procedural code are not
+modeled. Dropping a view that is not tracked is not an error. From Rust: `sql_sage::schema::Schema`.
 
 ## Function catalogs
 
@@ -238,9 +248,9 @@ interchange format.
 
 * Syntax only: no check that tables, columns or types exist.
 * Covered: `SELECT` (CTEs, set operations, joins, subqueries, window functions), `INSERT`
-  (incl. `ON CONFLICT`), `UPDATE`, `DELETE`, `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, `DROP`.
-* Not covered: PL/SQL and procedural code, `CONNECT BY`, Oracle `(+)` joins, window frames,
-  `IS DISTINCT FROM`, `CREATE VIEW`, `ALTER` of anything but tables.
+  (incl. `ON CONFLICT`), `UPDATE`, `DELETE`, `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, `CREATE SEQUENCE`, `CREATE VIEW`, `DROP`.
+* Not covered: PL/SQL and procedural code, `MERGE`, `CONNECT BY`, Oracle `(+)` joins, window frames,
+  `IS DISTINCT FROM`, materialized views, `ALTER` of anything but tables.
 * The parser is lenient in places (for example `AUTOINCREMENT` is accepted in every dialect).
 * Function catalogs contain names only (no argument types or per-version availability) and
   cover core built-ins; extension functions such as `pg_trgm`'s are *unverified*. The Postgres

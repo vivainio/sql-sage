@@ -20,6 +20,8 @@ pub enum Statement {
     Delete(Delete),
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
+    CreateSequence(CreateSequence),
+    CreateView(CreateView),
     AlterTable(AlterTable),
     Drop(Drop),
 }
@@ -357,7 +359,14 @@ pub enum ColumnOption {
     PrimaryKey,
     Unique,
     Autoincrement,
-    Identity { always: bool },
+    Identity {
+        always: bool,
+    },
+    /// `GENERATED ALWAYS AS (expr)` / Oracle `AS (expr)`: a computed column.
+    Generated {
+        expr: Expr,
+        stored: bool,
+    },
     References(ForeignKeyRef),
     Check(Expr),
     Collate(Ident),
@@ -383,6 +392,58 @@ pub enum TableConstraintKind {
     Unique(Vec<Ident>),
     ForeignKey { columns: Vec<Ident>, reference: ForeignKeyRef },
     Check(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateSequence {
+    pub if_not_exists: bool,
+    pub name: ObjectName,
+    pub options: Vec<SequenceOption>,
+}
+
+/// Numbers are kept as written (they may be negative or exceed 64 bits).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SequenceOption {
+    StartWith(String),
+    IncrementBy(String),
+    /// `None` is `NOMINVALUE`.
+    MinValue(Option<String>),
+    /// `None` is `NOMAXVALUE`.
+    MaxValue(Option<String>),
+    Cycle(bool),
+    /// `None` is `NOCACHE`.
+    Cache(Option<String>),
+    Order(bool),
+}
+
+impl SequenceOption {
+    /// `START WITH 1`, `NOCYCLE`, ... in the Oracle spelling.
+    pub fn text(&self) -> String {
+        match self {
+            SequenceOption::StartWith(n) => format!("START WITH {n}"),
+            SequenceOption::IncrementBy(n) => format!("INCREMENT BY {n}"),
+            SequenceOption::MinValue(Some(n)) => format!("MINVALUE {n}"),
+            SequenceOption::MinValue(None) => "NOMINVALUE".into(),
+            SequenceOption::MaxValue(Some(n)) => format!("MAXVALUE {n}"),
+            SequenceOption::MaxValue(None) => "NOMAXVALUE".into(),
+            SequenceOption::Cycle(true) => "CYCLE".into(),
+            SequenceOption::Cycle(false) => "NOCYCLE".into(),
+            SequenceOption::Cache(Some(n)) => format!("CACHE {n}"),
+            SequenceOption::Cache(None) => "NOCACHE".into(),
+            SequenceOption::Order(true) => "ORDER".into(),
+            SequenceOption::Order(false) => "NOORDER".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateView {
+    pub or_replace: bool,
+    /// Oracle `FORCE`: create even if the underlying objects do not exist.
+    pub force: bool,
+    pub name: ObjectName,
+    pub columns: Vec<Ident>,
+    pub query: Box<Query>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -422,6 +483,7 @@ pub enum ObjectType {
     Table,
     View,
     Index,
+    Sequence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

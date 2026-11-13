@@ -222,6 +222,8 @@ impl<'a> Emitter<'a> {
             Statement::Delete(d) => self.delete(d),
             Statement::CreateTable(c) => self.create_table(c),
             Statement::CreateIndex(c) => self.create_index(c),
+            Statement::CreateSequence(c) => self.create_sequence(c),
+            Statement::CreateView(c) => self.create_view(c),
             Statement::AlterTable(a) => self.alter_table(a),
             Statement::Drop(d) => self.drop_stmt(d),
         }
@@ -370,6 +372,14 @@ impl<'a> Emitter<'a> {
                 self.need(|d| d.supports_identity_columns(), "identity columns")?;
                 format!("GENERATED {} AS IDENTITY", if *always { "ALWAYS" } else { "BY DEFAULT" })
             }
+            ColumnOption::Generated { expr, stored } => {
+                let pg = self.target.is_some_and(|d| d.name() == "postgres");
+                let stored = *stored || pg;
+                if stored {
+                    self.need(|d| d.name() != "oracle", "stored generated columns")?;
+                }
+                format!("GENERATED ALWAYS AS ({}){}", self.expr(expr)?, if stored { " STORED" } else { "" })
+            }
             ColumnOption::References(r) => format!("REFERENCES {}", self.foreign_key_ref(r)),
             ColumnOption::Check(e) => format!("CHECK ({})", self.expr(e)?),
             ColumnOption::Collate(c) => format!("COLLATE {}", self.ident(c)),
@@ -427,6 +437,55 @@ impl<'a> Emitter<'a> {
             self.need(|d| d.supports_partial_index(), "partial indexes")?;
             out.push_str(&format!(" WHERE {}", self.expr(s)?));
         }
+        Ok(out)
+    }
+
+    fn create_sequence(&self, c: &CreateSequence) -> R {
+        self.need(|d| d.name() != "sqlite", "sequences")?;
+        let pg = self.target.is_some_and(|d| d.name() == "postgres");
+        let mut out = String::from("CREATE SEQUENCE ");
+        if c.if_not_exists {
+            self.need(|d| d.name() == "postgres", "CREATE SEQUENCE IF NOT EXISTS")?;
+            out.push_str("IF NOT EXISTS ");
+        }
+        out.push_str(&self.object_name(&c.name));
+        for o in &c.options {
+            if matches!(o, SequenceOption::Order(_)) {
+                self.need(|d| d.name() != "postgres", "sequence ORDER")?;
+            }
+            let text = o.text();
+            // PostgreSQL spells the negated forms with a space and has no NOCACHE/ORDER.
+            let text = match o {
+                SequenceOption::MinValue(None) | SequenceOption::MaxValue(None) | SequenceOption::Cycle(false)
+                    if pg =>
+                {
+                    text.replacen("NO", "NO ", 1)
+                }
+                SequenceOption::Cache(None) if pg => "CACHE 1".into(),
+                _ => text,
+            };
+            out.push(' ');
+            out.push_str(&text);
+        }
+        Ok(out)
+    }
+
+    fn create_view(&self, c: &CreateView) -> R {
+        let mut out = String::from("CREATE ");
+        if c.or_replace {
+            self.need(|d| d.name() != "sqlite", "CREATE OR REPLACE VIEW")?;
+            out.push_str("OR REPLACE ");
+        }
+        if c.force {
+            self.need(|d| d.name() == "oracle", "CREATE FORCE VIEW")?;
+            out.push_str("FORCE ");
+        }
+        out.push_str("VIEW ");
+        out.push_str(&self.object_name(&c.name));
+        if !c.columns.is_empty() {
+            out.push_str(&format!(" {}", self.paren_idents(&c.columns)));
+        }
+        out.push_str(&format!(" AS {}", self.query(&c.query)?));
         Ok(out)
     }
 
@@ -542,6 +601,10 @@ impl<'a> Emitter<'a> {
             ObjectType::Table => "TABLE",
             ObjectType::View => "VIEW",
             ObjectType::Index => "INDEX",
+            ObjectType::Sequence => {
+                self.need(|d| d.name() != "sqlite", "sequences")?;
+                "SEQUENCE"
+            }
         };
         let mut out = format!("DROP {t} ");
         if d.if_exists {

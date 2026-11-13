@@ -58,7 +58,9 @@ impl Outline {
                 }
                 s
             }
-            Statement::AlterTable(_) | Statement::Drop(_) => self.statement(s),
+            Statement::CreateSequence(_) | Statement::CreateView(_) | Statement::AlterTable(_) | Statement::Drop(_) => {
+                self.statement(s)
+            }
         }
     }
 
@@ -138,6 +140,9 @@ impl Outline {
             ColumnOption::Unique => "unique".into(),
             ColumnOption::Autoincrement => "autoinc".into(),
             ColumnOption::Identity { always } => format!("identity {}", if *always { "always" } else { "default" }),
+            ColumnOption::Generated { expr, stored } => {
+                format!("generated({}){}", self.expr(expr), if *stored { " stored" } else { "" })
+            }
             ColumnOption::References(r) => self.tight_fk(r),
             ColumnOption::Check(e) => format!("check({})", self.expr(e)),
             ColumnOption::Collate(c) => format!("collate {}", self.id(c)),

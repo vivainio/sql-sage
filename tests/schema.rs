@@ -5,7 +5,8 @@ use sql_sage::{check_syntax, transpile};
 /// Applies `sql`, asserting there are no errors, and returns the schema as DDL for the same dialect.
 fn derive(kind: DialectKind, sql: &str) -> String {
     let mut s = Schema::new(kind);
-    let errors = s.apply_sql(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+    let applied = s.apply_sql(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+    let errors = [applied.errors, applied.skipped].concat();
     assert!(errors.is_empty(), "{sql}: {errors:?}");
     s.to_sql(kind).unwrap()
 }
@@ -13,7 +14,9 @@ fn derive(kind: DialectKind, sql: &str) -> String {
 /// Applies `sql` and returns the messages of statements that could not apply.
 fn errors(kind: DialectKind, sql: &str) -> Vec<String> {
     let mut s = Schema::new(kind);
-    s.apply_sql(sql).unwrap().into_iter().map(|e| e.message).collect()
+    let applied = s.apply_sql(sql).unwrap();
+    assert!(applied.skipped.is_empty(), "{sql}: {:?}", applied.skipped);
+    applied.errors.into_iter().map(|e| e.message).collect()
 }
 
 #[test]
@@ -186,7 +189,7 @@ fn impossible_migrations_are_reported_and_skipped() {
 #[test]
 fn a_failing_action_leaves_the_table_untouched() {
     let mut s = Schema::new(Postgres);
-    let errs = s.apply_sql("CREATE TABLE t (a int); ALTER TABLE t ADD COLUMN b int, DROP COLUMN nope;").unwrap();
+    let errs = s.apply_sql("CREATE TABLE t (a int); ALTER TABLE t ADD COLUMN b int, DROP COLUMN nope;").unwrap().errors;
     assert_eq!(errs.len(), 1);
     assert_eq!(s.to_sql(Postgres).unwrap(), "CREATE TABLE t (a INT);");
     assert_eq!(errs[0].location.as_ref().map(|l| l.line), Some(1));

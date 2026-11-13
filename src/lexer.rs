@@ -156,7 +156,7 @@ impl<'a> Lexer<'a> {
     fn skip_trivia(&mut self) -> Result<()> {
         loop {
             match self.peek() {
-                Some(c) if c.is_whitespace() => {
+                Some(c) if c.is_whitespace() || c == '\u{feff}' => {
                     self.bump();
                 }
                 Some('-') if self.peek_at(1) == Some('-') => {
@@ -383,7 +383,12 @@ impl<'a> Lexer<'a> {
             }
             c if self.dialect.is_identifier_start(c) => {
                 let quote_follows = self.peek_at(1) == Some('\'');
-                if matches!(c, 'e' | 'E') && quote_follows && self.dialect.supports_escape_strings() {
+                if matches!(c, 'n' | 'N') && quote_follows {
+                    // National string literal N'...': read as an ordinary string.
+                    self.bump();
+                    self.bump();
+                    Token::SingleQuotedString(self.read_delimited('\'', true, "unterminated string literal")?)
+                } else if matches!(c, 'e' | 'E') && quote_follows && self.dialect.supports_escape_strings() {
                     self.bump();
                     self.bump();
                     Token::SingleQuotedString(self.read_escape_string()?)

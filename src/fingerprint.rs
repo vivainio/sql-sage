@@ -27,10 +27,13 @@ pub enum StatementKind {
     Delete,
     CreateTable,
     CreateIndex,
+    CreateSequence,
+    CreateView,
     AlterTable,
     DropTable,
     DropView,
     DropIndex,
+    DropSequence,
 }
 
 impl fmt::Display for StatementKind {
@@ -42,10 +45,13 @@ impl fmt::Display for StatementKind {
             StatementKind::Delete => "delete",
             StatementKind::CreateTable => "create_table",
             StatementKind::CreateIndex => "create_index",
+            StatementKind::CreateSequence => "create_sequence",
+            StatementKind::CreateView => "create_view",
             StatementKind::AlterTable => "alter_table",
             StatementKind::DropTable => "drop_table",
             StatementKind::DropView => "drop_view",
             StatementKind::DropIndex => "drop_index",
+            StatementKind::DropSequence => "drop_sequence",
         })
     }
 }
@@ -393,6 +399,12 @@ impl Collector {
                 }
                 StatementKind::CreateIndex
             }
+            Statement::CreateSequence(_) => StatementKind::CreateSequence,
+            Statement::CreateView(c) => {
+                self.table(&c.name, Access::Create);
+                self.query(&c.query);
+                StatementKind::CreateView
+            }
             Statement::AlterTable(a) => {
                 self.table(&a.name, Access::Alter);
                 for act in &a.actions {
@@ -417,6 +429,7 @@ impl Collector {
                     ObjectType::Table => StatementKind::DropTable,
                     ObjectType::View => StatementKind::DropView,
                     ObjectType::Index => StatementKind::DropIndex,
+                    ObjectType::Sequence => StatementKind::DropSequence,
                 }
             }
         }

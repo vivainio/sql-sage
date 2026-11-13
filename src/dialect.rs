@@ -56,6 +56,16 @@ pub trait Dialect: Debug {
     fn supports_q_quote_strings(&self) -> bool {
         false
     }
+    /// Storage and other physical clauses after `CREATE TABLE (...)` / `CREATE INDEX`
+    /// (`TABLESPACE`, `PCTFREE`, `COMPRESS`, `USING INDEX`, `ENABLE`, ...) are accepted and ignored.
+    fn supports_physical_clauses(&self) -> bool {
+        false
+    }
+    /// SQL*Plus commands (`SET`, `WHENEVER`, a lone `/`, ...) between statements are skipped
+    /// when parsing leniently.
+    fn supports_sqlplus_commands(&self) -> bool {
+        false
+    }
     /// `$$...$$` and `$tag$...$tag$` strings.
     fn supports_dollar_quoted_strings(&self) -> bool {
         false
@@ -475,6 +485,12 @@ impl Dialect for OracleDialect {
     fn supports_q_quote_strings(&self) -> bool {
         true
     }
+    fn supports_physical_clauses(&self) -> bool {
+        true
+    }
+    fn supports_sqlplus_commands(&self) -> bool {
+        true
+    }
     fn supports_colon_placeholders(&self) -> bool {
         true
     }
@@ -580,7 +596,7 @@ impl Dialect for OracleDialect {
             "UUID" => retype(dt, "RAW", Some(vec!["16"])),
             "NUMERIC" => retype(dt, "NUMBER", None),
             "DATETIME" => retype(dt, "TIMESTAMP", None),
-            _ => strip_length_units(dt),
+            _ => dt.clone(), // keep BYTE/CHAR length units: they change meaning in Oracle
         })
     }
 }

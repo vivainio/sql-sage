@@ -14,6 +14,7 @@ const USAGE: &str = "usage: sql-sage [-d postgres|sqlite|oracle] [--to postgres|
   --schema simulate the DDL in the given files/directories (applied in sorted order; positional
            arguments are paths) and print the resulting schema; --to picks the output dialect.
            Statements that cannot apply are reported on stderr (exit code 1)
+  -v       with --schema: list every statement that was skipped because it did not parse
   --check  only validate syntax (exit code 1 on error)
   --ast    print the AST as YAML instead of normalized SQL
   --ast-compact  shorter YAML-like text for reading (not valid YAML)
@@ -27,6 +28,7 @@ fn main() -> ExitCode {
     let mut compat: Option<DialectKind> = None;
     let mut fingerprint = false;
     let mut schema = false;
+    let mut verbose = false;
     let mut files: Vec<String> = vec![];
     let mut positional: Vec<String> = vec![];
     let sql: Option<String>;
@@ -57,6 +59,7 @@ fn main() -> ExitCode {
             },
             "--fingerprint" => fingerprint = true,
             "--schema" => schema = true,
+            "-v" | "--verbose" => verbose = true,
             "--check" => check = true,
             "--ast" => ast = true,
             "--ast-compact" => ast_compact = true,
@@ -74,7 +77,7 @@ fn main() -> ExitCode {
     }
     if schema {
         files.extend(positional);
-        return run_schema(kind, to, &files);
+        return run_schema(kind, to, &files, verbose);
     }
     if let Some(path) = files.last() {
         match std::fs::read_to_string(path) {
@@ -180,7 +183,7 @@ fn expand_paths(paths: &[String]) -> Result<Vec<std::path::PathBuf>, String> {
     Ok(out)
 }
 
-fn run_schema(kind: DialectKind, to: Option<DialectKind>, paths: &[String]) -> ExitCode {
+fn run_schema(kind: DialectKind, to: Option<DialectKind>, paths: &[String], verbose: bool) -> ExitCode {
     if paths.is_empty() {
         return fail("--schema needs at least one file or directory");
     }
@@ -196,10 +199,21 @@ fn run_schema(kind: DialectKind, to: Option<DialectKind>, paths: &[String]) -> E
             Err(e) => return fail(&format!("{}: {e}", f.display())),
         };
         match schema.apply_sql(&sql) {
-            Ok(errors) => {
-                for e in errors {
+            Ok(applied) => {
+                for e in &applied.errors {
                     eprintln!("{}: {e}", f.display());
                     failed = true;
+                }
+                if verbose {
+                    for e in &applied.skipped {
+                        eprintln!("{}: skipped: {e}", f.display());
+                    }
+                } else if let Some(first) = applied.skipped.first() {
+                    eprintln!(
+                        "{}: skipped {} statement(s) that could not be parsed (first: {first}); -v lists them",
+                        f.display(),
+                        applied.skipped.len()
+                    );
                 }
             }
             Err(e) => {

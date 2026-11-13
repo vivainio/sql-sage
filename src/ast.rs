@@ -16,6 +16,7 @@ pub struct ObjectName(pub Vec<Ident>);
 pub enum Statement {
     Query(Box<Query>),
     Insert(Insert),
+    InsertAll(InsertAll),
     Update(Update),
     Delete(Delete),
     Merge(Merge),
@@ -463,6 +464,31 @@ pub enum TableConstraintKind {
     Unique(Vec<Ident>),
     ForeignKey { columns: Vec<Ident>, reference: ForeignKeyRef },
     Check(Expr),
+}
+
+/// Oracle multi-table insert: `INSERT ALL|FIRST [WHEN c THEN] INTO ... [ELSE INTO ...] SELECT ...`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertAll {
+    /// `FIRST` rather than `ALL`.
+    pub first: bool,
+    /// One arm without a condition for plain `INSERT ALL INTO ...`.
+    pub arms: Vec<InsertAllArm>,
+    pub else_targets: Vec<InsertTarget>,
+    pub source: Box<Query>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertAllArm {
+    pub condition: Option<Expr>,
+    pub targets: Vec<InsertTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertTarget {
+    pub table: ObjectName,
+    pub columns: Vec<Ident>,
+    /// Empty when `VALUES` is omitted (the select list is used).
+    pub values: Vec<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

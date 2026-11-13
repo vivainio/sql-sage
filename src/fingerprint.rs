@@ -432,6 +432,19 @@ impl Collector {
                 }
                 StatementKind::AlterTable
             }
+            Statement::InsertAll(i) => {
+                for t in i.arms.iter().flat_map(|a| &a.targets).chain(&i.else_targets) {
+                    self.table(&t.table, Access::Insert);
+                    for v in &t.values {
+                        self.expr(v);
+                    }
+                }
+                for c in i.arms.iter().filter_map(|a| a.condition.as_ref()) {
+                    self.expr(c);
+                }
+                self.query(&i.source);
+                StatementKind::Insert
+            }
             Statement::Merge(m) => {
                 self.write_target(&m.target, Access::Update);
                 self.table_with_joins(&TableWithJoins { relation: m.source.clone(), joins: vec![] });

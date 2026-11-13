@@ -492,6 +492,42 @@ fn multi_column_assignment_and_case_alias() {
 }
 
 #[test]
+fn multi_table_insert() {
+    let all = "INSERT ALL INTO t1 (a, b) VALUES (x, y) INTO t2 (a) VALUES (x) SELECT x, y FROM src";
+    assert_eq!(transpile(Oracle, Oracle, all).unwrap(), format!("{all};"));
+    let cond = "INSERT FIRST WHEN x > 1 THEN INTO t1 (a) VALUES (x) WHEN x > 0 THEN INTO t2 VALUES (x) ELSE INTO t3 (a) VALUES (0) SELECT x FROM src";
+    assert_eq!(transpile(Oracle, Oracle, cond).unwrap(), format!("{cond};"));
+    assert!(check_syntax(Oracle, "INSERT ALL INTO t1 INTO t2 SELECT * FROM src").is_ok());
+    assert!(check_syntax(Oracle, "INSERT ALL SELECT * FROM src").is_err());
+    assert!(transpile(Oracle, Postgres, all).is_err());
+    let fp = sql_sage::fingerprint_sql(Oracle, all).unwrap();
+    assert_eq!(fp[0].to_string(), "insert | src:read t1:insert t2:insert | - | -");
+}
+
+#[test]
+fn sqlplus_slash_terminates_a_statement_and_misc_oracle_words() {
+    let mut s = Schema::new(Oracle);
+    let applied = s
+        .apply_sql(
+            "DEF schema_name = 'X'
+             CREATE TABLE a (x NUMBER)
+             /
+             CREATE TABLE b (y NUMBER, \"LIMIT\" NUMBER, limit_value NUMBER)
+             /
+             INSERT INTO a SELECT 1 / 2 FROM dual
+             /
+             ALTER TABLE a RENAME CONSTRAINTS c1 TO c2;",
+        )
+        .unwrap();
+    // The last statement fails to apply (no such constraint), but everything parsed.
+    assert_eq!(applied.skipped, vec![]);
+    assert_eq!(applied.errors.len(), 1);
+    assert_eq!(s.tables().len(), 2);
+    assert!(check_syntax(Oracle, "SELECT limit FROM t").is_ok());
+    assert!(check_syntax(Postgres, "SELECT limit FROM t").is_err());
+}
+
+#[test]
 fn truncate_and_rename() {
     assert_eq!(transpile(Oracle, Postgres, "TRUNCATE TABLE a, b DROP STORAGE").unwrap(), "TRUNCATE TABLE a, b;");
     assert_eq!(transpile(Postgres, Postgres, "TRUNCATE a CASCADE").unwrap(), "TRUNCATE TABLE a;");

@@ -80,7 +80,7 @@ fn main() -> ExitCode {
         return run_schema(kind, to, &files, verbose);
     }
     if let Some(path) = files.last() {
-        match std::fs::read_to_string(path) {
+        match read_sql_file(path) {
             Ok(s) => sql = Some(s),
             Err(e) => return fail(&e.to_string()),
         }
@@ -194,7 +194,7 @@ fn run_schema(kind: DialectKind, to: Option<DialectKind>, paths: &[String], verb
     let mut schema = sql_sage::schema::Schema::new(kind);
     let mut failed = false;
     for f in &files {
-        let sql = match std::fs::read_to_string(f) {
+        let sql = match read_sql_file(f) {
             Ok(s) => s,
             Err(e) => return fail(&format!("{}: {e}", f.display())),
         };
@@ -246,4 +246,25 @@ fn run_schema(kind: DialectKind, to: Option<DialectKind>, paths: &[String], verb
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Reads a SQL script. UTF-16 (with a byte-order mark) is decoded; bytes that are not valid
+/// UTF-8 are read as Latin-1 rather than rejected.
+fn read_sql_file(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    let utf16 = |rest: &[u8], le: bool| {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    Ok(match bytes.as_slice() {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
+        _ => match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
+        },
+    })
 }

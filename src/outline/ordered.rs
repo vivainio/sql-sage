@@ -26,6 +26,7 @@ impl Outline {
         match s {
             Statement::Query(q) => self.query(q),
             Statement::Insert(i) => self.insert(i),
+            Statement::InsertAll(i) => self.insert_all(i),
             Statement::Update(u) => self.update(u),
             Statement::Delete(d) => self.delete(d),
             Statement::Merge(m) => self.merge(m),
@@ -127,6 +128,36 @@ impl Outline {
             lines.push(self.filter("filter", s));
         }
         lines.extend(self.returning(&u.returning));
+        lines.join("\n")
+    }
+
+    pub(super) fn insert_all(&self, i: &InsertAll) -> String {
+        let targets = |ts: &[InsertTarget]| -> Vec<String> {
+            ts.iter()
+                .map(|t| {
+                    let mut s = format!("into {}", self.name(&t.table));
+                    if !t.columns.is_empty() {
+                        s.push_str(&format!(" ({})", self.ids(&t.columns)));
+                    }
+                    if !t.values.is_empty() {
+                        s.push_str(&format!(" values ({})", self.exprs(&t.values)));
+                    }
+                    indent(&s, 2)
+                })
+                .collect()
+        };
+        let mut lines = vec![format!("insert {}", if i.first { "first" } else { "all" })];
+        for arm in &i.arms {
+            if let Some(c) = &arm.condition {
+                lines.push(indent(&self.filter("when", c), 2));
+            }
+            lines.extend(targets(&arm.targets));
+        }
+        if !i.else_targets.is_empty() {
+            lines.push(indent("else", 2));
+            lines.extend(targets(&i.else_targets));
+        }
+        lines.push(self.query(&i.source));
         lines.join("\n")
     }
 

@@ -218,6 +218,7 @@ impl<'a> Emitter<'a> {
         match s {
             Statement::Query(q) => self.query(q),
             Statement::Insert(i) => self.insert(i),
+            Statement::InsertAll(i) => self.insert_all(i),
             Statement::Update(u) => self.update(u),
             Statement::Delete(d) => self.delete(d),
             Statement::Merge(m) => self.merge(m),
@@ -312,6 +313,37 @@ impl<'a> Emitter<'a> {
             out.push_str(&format!(" WHERE {}", self.expr(s)?));
         }
         out.push_str(&self.returning(&u.returning)?);
+        Ok(out)
+    }
+
+    fn insert_targets(&self, targets: &[InsertTarget]) -> R {
+        let mut out = vec![];
+        for t in targets {
+            let mut s = format!("INTO {}", self.object_name(&t.table));
+            if !t.columns.is_empty() {
+                s.push_str(&format!(" {}", self.paren_idents(&t.columns)));
+            }
+            if !t.values.is_empty() {
+                s.push_str(&format!(" VALUES ({})", self.list(&t.values, Self::expr)?));
+            }
+            out.push(s);
+        }
+        Ok(out.join(" "))
+    }
+
+    fn insert_all(&self, i: &InsertAll) -> R {
+        self.need(|d| d.name() == "oracle", "multi-table INSERT")?;
+        let mut out = format!("INSERT {}", if i.first { "FIRST" } else { "ALL" });
+        for arm in &i.arms {
+            if let Some(c) = &arm.condition {
+                out.push_str(&format!(" WHEN {} THEN", self.expr(c)?));
+            }
+            out.push_str(&format!(" {}", self.insert_targets(&arm.targets)?));
+        }
+        if !i.else_targets.is_empty() {
+            out.push_str(&format!(" ELSE {}", self.insert_targets(&i.else_targets)?));
+        }
+        out.push_str(&format!(" {}", self.query(&i.source)?));
         Ok(out)
     }
 

@@ -63,6 +63,7 @@ impl Outline {
             | Statement::AlterTable(_)
             | Statement::Truncate(_)
             | Statement::Merge(_)
+            | Statement::InsertAll(_)
             | Statement::Other(_)
             | Statement::Drop(_) => self.statement(s),
         }

@@ -178,7 +178,8 @@ impl<'a> Parser<'a> {
 
     fn is_reserved(&self, word: &str) -> bool {
         let u = word.to_ascii_uppercase();
-        RESERVED.contains(&u.as_str()) || (u == "MINUS" && self.dialect.supports_minus_operator())
+        (RESERVED.contains(&u.as_str()) && !(u == "LIMIT" && !self.dialect.supports_limit()))
+            || (u == "MINUS" && self.dialect.supports_minus_operator())
     }
 
     fn peek_query_start(&self) -> bool {
@@ -224,7 +225,7 @@ impl<'a> Parser<'a> {
             let start = self.index;
             let at = self.location();
             let result = self.parse_statement().and_then(|s| {
-                if matches!(self.peek_token(), Token::Semicolon | Token::Eof) {
+                if matches!(self.peek_token(), Token::Semicolon | Token::Eof) || self.is_sqlplus_slash(self.index) {
                     Ok(s)
                 } else {
                     self.expected("end of statement")
@@ -318,11 +319,23 @@ impl<'a> Parser<'a> {
         index == 0 || self.line_of(index - 1) < self.line_of(index)
     }
 
+    /// Is the token at `index` a `/` alone on its line, which SQL*Plus reads as a terminator?
+    fn is_sqlplus_slash(&self, index: usize) -> bool {
+        self.dialect.supports_sqlplus_commands()
+            && index < self.tokens.len()
+            && self.tokens[index].token == Token::Slash
+            && self.starts_line(index)
+            && (index + 1 >= self.tokens.len()
+                || self.tokens[index + 1].token == Token::Eof
+                || self.line_of(index + 1) > self.line_of(index))
+    }
+
     fn skip_sqlplus_command(&mut self) -> bool {
-        let lone_slash = *self.peek_token() == Token::Slash && self.starts_line(self.index);
-        let command = ["SET", "WHENEVER", "SPOOL", "PROMPT", "EXIT", "DEFINE", "UNDEFINE", "REM"]
-            .iter()
-            .any(|k| self.peek_keyword(k));
+        let lone_slash = self.is_sqlplus_slash(self.index);
+        let command =
+            ["SET", "WHENEVER", "SPOOL", "PROMPT", "EXIT", "DEFINE", "DEF", "UNDEFINE", "REM", "SQLERROR", "OSERROR"]
+                .iter()
+                .any(|k| self.peek_keyword(k));
         if !(lone_slash || command) {
             return false;
         }
@@ -376,7 +389,13 @@ impl<'a> Parser<'a> {
         if self.peek_query_start() || *self.peek_token() == Token::LParen {
             return Ok(Statement::Query(Box::new(self.parse_query()?)));
         }
-        if self.peek_keyword("INSERT") {
+        if self.peek_keyword("INSERT")
+            && (self.peek_nth_keyword(1, "ALL")
+                || self.peek_nth_keyword(1, "FIRST")
+                || self.peek_nth_keyword(1, "WHEN"))
+        {
+            self.parse_insert_all()
+        } else if self.peek_keyword("INSERT") {
             self.parse_insert()
         } else if self.peek_keyword("UPDATE") {
             self.parse_update()
@@ -401,6 +420,53 @@ impl<'a> Parser<'a> {
         } else {
             self.expected("a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER or DROP)")
         }
+    }
+
+    fn parse_insert_all(&mut self) -> Result<Statement> {
+        self.expect_keyword("INSERT")?;
+        let first = if self.parse_keyword("FIRST") {
+            true
+        } else {
+            self.parse_keyword("ALL");
+            false
+        };
+        let mut arms = vec![];
+        let mut else_targets = vec![];
+        if self.peek_keyword("WHEN") {
+            while self.parse_keyword("WHEN") {
+                let condition = Some(self.parse_expr()?);
+                self.expect_keyword("THEN")?;
+                arms.push(InsertAllArm { condition, targets: self.parse_insert_targets()? });
+            }
+            if self.parse_keyword("ELSE") {
+                else_targets = self.parse_insert_targets()?;
+            }
+        } else {
+            arms.push(InsertAllArm { condition: None, targets: self.parse_insert_targets()? });
+        }
+        let source = Box::new(self.parse_query()?);
+        Ok(Statement::InsertAll(InsertAll { first, arms, else_targets, source }))
+    }
+
+    fn parse_insert_targets(&mut self) -> Result<Vec<InsertTarget>> {
+        let mut targets = vec![];
+        while self.parse_keyword("INTO") {
+            let table = self.parse_object_name()?;
+            let columns = if *self.peek_token() == Token::LParen { self.parse_paren_idents()? } else { vec![] };
+            let values = if self.parse_keyword("VALUES") {
+                self.expect_token(&Token::LParen)?;
+                let v = self.parse_comma_separated(Self::parse_expr)?;
+                self.expect_token(&Token::RParen)?;
+                v
+            } else {
+                vec![]
+            };
+            targets.push(InsertTarget { table, columns, values });
+        }
+        if targets.is_empty() {
+            return self.expected("INTO");
+        }
+        Ok(targets)
     }
 
     fn parse_merge(&mut self) -> Result<Statement> {
@@ -824,7 +890,7 @@ impl<'a> Parser<'a> {
         } else if self.parse_keyword("RENAME") {
             if self.parse_keyword("TO") {
                 out.push(AlterAction::RenameTable(self.parse_ident()?));
-            } else if self.parse_keyword("CONSTRAINT") {
+            } else if self.parse_keyword("CONSTRAINT") || self.parse_keyword("CONSTRAINTS") {
                 let old = self.parse_ident()?;
                 self.expect_keyword("TO")?;
                 out.push(AlterAction::RenameConstraint { old, new: self.parse_ident()? });
@@ -1869,6 +1935,7 @@ impl<'a> Parser<'a> {
             Token::Concat => 30,
             Token::Arrow | Token::LongArrow if self.dialect.supports_json_arrows() => 30,
             Token::Plus | Token::Minus => 40,
+            Token::Slash if self.is_sqlplus_slash(self.index) => 0,
             Token::Star | Token::Slash | Token::Percent => 50,
             Token::DoubleColon if self.dialect.supports_double_colon_cast() => 70,
             _ => 0,

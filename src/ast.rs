@@ -758,7 +758,41 @@ pub struct Other {
     pub text: String,
 }
 
+/// Does an `ALTER TABLE` clause (as text) only set storage options (`MOVE`, `LOGGING`,
+/// `PARALLEL`, `COMPRESS`, `ENABLE ROW MOVEMENT`, ...)? Those have no meaning in SQLite.
+pub fn alter_clause_is_physical(text: &str) -> bool {
+    let upper = text.to_ascii_uppercase();
+    let mut words = upper.split_whitespace();
+    match words.next() {
+        Some(
+            "MOVE" | "LOGGING" | "NOLOGGING" | "PARALLEL" | "NOPARALLEL" | "COMPRESS" | "NOCOMPRESS" | "SHRINK"
+            | "CACHE" | "NOCACHE" | "MONITORING" | "NOMONITORING" | "INMEMORY",
+        ) => true,
+        Some("ENABLE" | "DISABLE") => words.next() == Some("ROW"),
+        Some("MODIFY") => words.next() == Some("PARTITION") && words.next() == Some("BY"),
+        _ => false,
+    }
+}
+
 impl Other {
+    /// What a statement that cannot be translated in general means in SQLite, if anything:
+    /// `ALTER INDEX i REBUILD ...` is `REINDEX i`, and index storage options are no-ops.
+    pub fn sqlite_equivalent(&self) -> Option<String> {
+        if self.kind != "ALTER INDEX" {
+            return None;
+        }
+        let words: Vec<&str> = self.text.split_whitespace().collect();
+        let (name, action) = (words.get(2)?, words.get(3)?.to_ascii_uppercase());
+        match action.as_str() {
+            "REBUILD" => Some(format!("REINDEX {name}")),
+            "PARALLEL" | "NOPARALLEL" | "LOGGING" | "NOLOGGING" | "COMPRESS" | "NOCOMPRESS" | "MONITORING"
+            | "NOMONITORING" | "SHRINK" | "COALESCE" | "VISIBLE" | "INVISIBLE" => {
+                Some(format!("-- {} (storage option: nothing to do in SQLite)", self.text))
+            }
+            _ => None,
+        }
+    }
+
     /// Transaction control is the same in every dialect, so it translates as written.
     pub fn is_portable(&self) -> bool {
         matches!(self.kind.as_str(), "COMMIT" | "ROLLBACK" | "SAVEPOINT")

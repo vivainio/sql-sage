@@ -249,6 +249,12 @@ impl<'a> Emitter<'a> {
             Statement::Other(o) => {
                 if let (Some(s), Some(t)) = (self.source, self.target) {
                     if s.name() != t.name() && !o.is_portable() {
+                        if t.name() == "sqlite" {
+                            if let Some(eq) = o.sqlite_equivalent() {
+                                self.note(Severity::Rewritten, format!("{} -> {eq}", o.kind), None);
+                                return Ok(eq);
+                            }
+                        }
                         self.fail(format!("{} statements cannot be translated", o.kind), None)?;
                     }
                 }
@@ -349,7 +355,43 @@ impl<'a> Emitter<'a> {
         Ok(out.join(" "))
     }
 
+    /// `INSERT ALL INTO a VALUES (..) INTO b VALUES (..) SELECT * FROM dual`: when the source is a
+    /// single row from DUAL and nothing is conditional, each target is an INSERT of its own.
+    fn insert_all_as_inserts(&self, i: &InsertAll) -> Option<R> {
+        let one_row = i.else_targets.is_empty()
+            && i.arms.iter().all(|a| a.condition.is_none() && a.targets.iter().all(|t| !t.values.is_empty()))
+            && i.source.order_by.is_empty()
+            && i.source.limit.is_none()
+            && matches!(&i.source.body, SetExpr::Select(s)
+                if s.selection.is_none()
+                    && s.group_by.is_empty()
+                    && s.hierarchy.is_none()
+                    && matches!(s.from.as_slice(), [TableWithJoins { relation: TableFactor::Table { name, .. }, joins }]
+                        if joins.is_empty() && matches!(name.0.as_slice(), [n] if n.value.eq_ignore_ascii_case("dual"))));
+        if !one_row {
+            return None;
+        }
+        Some((|| {
+            let mut out = vec![];
+            for t in i.arms.iter().flat_map(|a| &a.targets) {
+                let mut s = format!("INSERT INTO {}", self.object_name(&t.table));
+                if !t.columns.is_empty() {
+                    s.push_str(&format!(" {}", self.paren_idents(&t.columns)));
+                }
+                s.push_str(&format!(" VALUES ({})", self.list(&t.values, Self::expr)?));
+                out.push(s);
+            }
+            self.note(Severity::Rewritten, "INSERT ALL ... FROM dual -> one INSERT per target", None);
+            Ok(out.join("; "))
+        })())
+    }
+
     fn insert_all(&self, i: &InsertAll) -> R {
+        if self.target.is_some_and(|d| d.name() != "oracle") {
+            if let Some(r) = self.insert_all_as_inserts(i) {
+                return r;
+            }
+        }
         self.need(|d| d.name() == "oracle", "multi-table INSERT")?;
         let mut out = format!("INSERT {}", if i.first { "FIRST" } else { "ALL" });
         for arm in &i.arms {
@@ -640,6 +682,15 @@ impl<'a> Emitter<'a> {
         };
         let mut parts = vec![];
         for act in &a.actions {
+            if let (AlterAction::Other(text), Some(s), Some(t)) = (act, self.source, self.target) {
+                if s.name() != t.name() {
+                    if t.name() == "sqlite" && alter_clause_is_physical(text) {
+                        self.note(Severity::Rewritten, format!("`{text}` dropped: a storage option"), None);
+                        continue;
+                    }
+                    self.fail(format!("ALTER TABLE clause `{text}` cannot be translated"), None)?;
+                }
+            }
             let only_pg = |what: &str| self.need(|d| d.name() != "sqlite", what);
             parts.push(match act {
                 AlterAction::AddColumn { if_not_exists, column } => {
@@ -732,6 +783,9 @@ impl<'a> Emitter<'a> {
                     p
                 }
             });
+        }
+        if parts.is_empty() && !a.actions.is_empty() {
+            return Ok(format!("-- {out} (storage options only: nothing to do in SQLite)"));
         }
         out.push(' ');
         out.push_str(&parts.join(", "));
@@ -1909,8 +1963,18 @@ fn fold_datetime(value: &str, mask: &str) -> Option<String> {
             year = Some(number(&mut vi, 4)?);
             mi += 4;
         } else if rest.starts_with("YY") || rest.starts_with("RR") {
-            let y = number(&mut vi, 2)?;
-            year = Some(if y < 50 { 2000 + y } else { 1900 + y });
+            // a two-digit year is placed in the nearest century, a four-digit one is taken as it is;
+            // when another number follows directly in the mask, only two digits belong to the year
+            let packed = m.as_bytes().get(mi + 2).is_some_and(u8::is_ascii_alphabetic);
+            let start = vi;
+            let y = number(&mut vi, if packed { 2 } else { 4 })?;
+            year = Some(if vi - start <= 2 && y < 50 {
+                2000 + y
+            } else if vi - start <= 2 {
+                1900 + y
+            } else {
+                y
+            });
             mi += 2;
         } else if rest.starts_with("MONTH") {
             return None;

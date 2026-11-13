@@ -98,6 +98,47 @@ fn to_date_without_a_mask_and_round_trips_through_to_char() {
 }
 
 #[test]
+fn storage_clauses_are_dropped_and_index_rebuilds_become_reindex() {
+    assert_eq!(
+        lite("ALTER TABLE t MOVE ONLINE ROW STORE COMPRESS ADVANCED"),
+        "-- ALTER TABLE t (storage options only: nothing to do in SQLite);"
+    );
+    assert_eq!(
+        lite("ALTER TABLE t ENABLE ROW MOVEMENT"),
+        "-- ALTER TABLE t (storage options only: nothing to do in SQLite);"
+    );
+    assert_eq!(lite("ALTER TABLE t ADD c NUMBER, LOGGING, PARALLEL 4"), "ALTER TABLE t ADD COLUMN c NUMBER;");
+    assert_eq!(lite("ALTER INDEX ix REBUILD ONLINE"), "REINDEX ix;");
+    assert!(lite("ALTER INDEX ix NOPARALLEL").starts_with("-- ALTER INDEX ix NOPARALLEL"));
+    // anything with a meaning of its own is still refused
+    assert!(transpile(Oracle, Sqlite, "ALTER TABLE t DISABLE CONSTRAINT c").is_err());
+    assert!(transpile(Oracle, Sqlite, "ALTER TABLE t TRUNCATE PARTITION p").is_err());
+    assert!(transpile(Oracle, Sqlite, "ALTER INDEX ix UNUSABLE").is_err());
+    assert!(transpile(Oracle, Postgres, "ALTER TABLE t MOVE ONLINE").is_err());
+    // between the same dialect nothing changes
+    assert_eq!(transpile(Oracle, Oracle, "ALTER TABLE t MOVE ONLINE").unwrap(), "ALTER TABLE t MOVE ONLINE;");
+}
+
+#[test]
+fn multi_table_insert_from_dual_becomes_plain_inserts() {
+    assert_eq!(
+        lite("INSERT ALL INTO a (x, y) VALUES (1, 'p') INTO b VALUES (2) SELECT * FROM dual"),
+        "INSERT INTO a (x, y) VALUES (1, 'p'); INSERT INTO b VALUES (2);"
+    );
+    // conditional or row-dependent inserts have no such equivalent
+    assert!(transpile(Oracle, Sqlite, "INSERT ALL INTO a VALUES (1) SELECT * FROM src").is_err());
+    assert!(transpile(Oracle, Sqlite, "INSERT FIRST WHEN 1 = 1 THEN INTO a VALUES (1) SELECT * FROM dual").is_err());
+    assert!(transpile(Oracle, Sqlite, "INSERT ALL INTO a SELECT * FROM dual").is_err());
+}
+
+#[test]
+fn rr_accepts_four_digit_years() {
+    assert_eq!(lite("SELECT TO_DATE('31-12-9999', 'DD-MM-RR') FROM dual"), "SELECT '9999-12-31';");
+    assert_eq!(lite("SELECT TO_DATE('01-04-16', 'DD-MM-RR') FROM dual"), "SELECT '2016-04-01';");
+    assert_eq!(lite("SELECT TO_DATE('010420', 'DDMMRR') FROM dual"), "SELECT '2020-04-01';");
+}
+
+#[test]
 fn hextoraw_and_case_insensitive_sort_keys() {
     assert_eq!(
         lite("CREATE TABLE t (id RAW(16) DEFAULT HEXTORAW('00000000000000000000000000000000') NOT NULL)"),

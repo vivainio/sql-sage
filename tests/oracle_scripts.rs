@@ -430,6 +430,68 @@ fn oracle_alter_table_clauses_in_a_schema() {
 }
 
 #[test]
+fn hierarchical_queries() {
+    let sql = "SELECT LEVEL, id, CONNECT_BY_ROOT id AS root FROM org START WITH parent_id IS NULL CONNECT BY NOCYCLE PRIOR id = parent_id";
+    assert_eq!(transpile(Oracle, Oracle, sql).unwrap(), format!("{sql};"));
+    // The two clauses may come in either order, and no alias is taken from START / CONNECT.
+    assert_eq!(
+        transpile(Oracle, Oracle, "SELECT id FROM org CONNECT BY PRIOR id = parent_id START WITH id = 1").unwrap(),
+        "SELECT id FROM org START WITH id = 1 CONNECT BY PRIOR id = parent_id;"
+    );
+    assert_eq!(
+        transpile(
+            Oracle,
+            Oracle,
+            "SELECT id FROM org o WHERE x = 1 START WITH o.id = 1 CONNECT BY PRIOR o.id = o.parent_id"
+        )
+        .unwrap(),
+        "SELECT id FROM org o WHERE x = 1 START WITH o.id = 1 CONNECT BY PRIOR o.id = o.parent_id;"
+    );
+    assert!(transpile(Oracle, Postgres, sql).is_err());
+    assert!(check_syntax(Postgres, "SELECT id FROM org START WITH id = 1 CONNECT BY id = 2").is_err());
+    let fp = sql_sage::fingerprint_sql(Oracle, sql).unwrap();
+    assert!(fp[0].to_string().contains("hierarchy"), "{}", fp[0]);
+    // PRIOR is only an operator in Oracle.
+    assert!(check_syntax(Postgres, "SELECT prior FROM t").is_ok());
+}
+
+#[test]
+fn merge_statements() {
+    let oracle = "MERGE INTO t AS d USING (SELECT id, v FROM s) AS x ON (d.id = x.id) \
+                  WHEN MATCHED THEN UPDATE SET d.v = x.v, d.w = 1 WHERE d.v <> x.v DELETE WHERE d.w = 2 \
+                  WHEN NOT MATCHED THEN INSERT (id, v) VALUES (x.id, x.v) WHERE x.v IS NOT NULL";
+    assert!(check_syntax(Oracle, oracle).is_ok());
+    let out = transpile(Oracle, Oracle, oracle).unwrap();
+    assert!(check_syntax(Oracle, &out).is_ok(), "{out}");
+    assert!(
+        out.starts_with("MERGE INTO t d USING (SELECT id, v FROM s) x ON (d.id = x.id) WHEN MATCHED THEN UPDATE SET")
+    );
+    let pg = "MERGE INTO t USING s ON t.id = s.id \
+              WHEN MATCHED AND s.gone THEN DELETE \
+              WHEN MATCHED THEN UPDATE SET v = s.v \
+              WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)";
+    assert_eq!(transpile(Postgres, Postgres, pg).unwrap(), format!("{pg};"));
+    assert!(check_syntax(Postgres, "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DO NOTHING").is_ok());
+    assert!(check_syntax(Oracle, "MERGE INTO t USING s ON (t.id = s.id)").is_err());
+    assert!(transpile(Postgres, Sqlite, pg).is_err());
+    let fp = sql_sage::fingerprint_sql(Postgres, pg).unwrap();
+    assert_eq!(fp[0].to_string(), "merge | s:read t:update | upsert | -");
+}
+
+#[test]
+fn multi_column_assignment_and_case_alias() {
+    let sql = "UPDATE t SET (a, b) = (SELECT x, y FROM s WHERE s.id = t.id), c = 1 WHERE EXISTS (SELECT 1 FROM s WHERE s.id = t.id)";
+    assert_eq!(transpile(Oracle, Oracle, sql).unwrap(), format!("{sql};"));
+    assert_eq!(
+        transpile(Oracle, Oracle, "UPDATE t SET (a) = (SELECT 1 FROM dual)").unwrap(),
+        "UPDATE t SET a = (SELECT 1 FROM dual);"
+    );
+    // Oracle accepts `END CASE` as an alias for a CASE expression.
+    assert!(check_syntax(Oracle, "SELECT CASE WHEN a = 1 THEN 2 ELSE 3 END CASE FROM t").is_ok());
+    assert!(check_syntax(Postgres, "SELECT CASE WHEN a = 1 THEN 2 ELSE 3 END CASE FROM t").is_err());
+}
+
+#[test]
 fn truncate_and_rename() {
     assert_eq!(transpile(Oracle, Postgres, "TRUNCATE TABLE a, b DROP STORAGE").unwrap(), "TRUNCATE TABLE a, b;");
     assert_eq!(transpile(Postgres, Postgres, "TRUNCATE a CASCADE").unwrap(), "TRUNCATE TABLE a;");

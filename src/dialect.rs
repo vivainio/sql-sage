@@ -61,6 +61,10 @@ pub trait Dialect: Debug {
     fn supports_physical_clauses(&self) -> bool {
         false
     }
+    /// `START WITH ... CONNECT BY ...`, `PRIOR`.
+    fn supports_connect_by(&self) -> bool {
+        false
+    }
     /// SQL*Plus commands (`SET`, `WHENEVER`, a lone `/`, ...) between statements are skipped
     /// when parsing leniently.
     fn supports_sqlplus_commands(&self) -> bool {
@@ -489,6 +493,9 @@ impl Dialect for OracleDialect {
         true
     }
     fn supports_sqlplus_commands(&self) -> bool {
+        true
+    }
+    fn supports_connect_by(&self) -> bool {
         true
     }
     fn supports_colon_placeholders(&self) -> bool {

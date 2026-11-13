@@ -31,6 +31,7 @@ pub enum StatementKind {
     CreateView,
     AlterTable,
     Truncate,
+    Merge,
     Other,
     DropTable,
     DropView,
@@ -51,6 +52,7 @@ impl fmt::Display for StatementKind {
             StatementKind::CreateView => "create_view",
             StatementKind::AlterTable => "alter_table",
             StatementKind::Truncate => "truncate",
+            StatementKind::Merge => "merge",
             StatementKind::Other => "other",
             StatementKind::DropTable => "drop_table",
             StatementKind::DropView => "drop_view",
@@ -101,6 +103,7 @@ pub enum Operation {
     NaturalJoin,
     Group,
     Having,
+    Hierarchy,
     Distinct,
     Sort,
     Limit,
@@ -131,6 +134,7 @@ impl fmt::Display for Operation {
             Operation::NaturalJoin => "join:natural",
             Operation::Group => "group",
             Operation::Having => "having",
+            Operation::Hierarchy => "hierarchy",
             Operation::Distinct => "distinct",
             Operation::Sort => "sort",
             Operation::Limit => "limit",
@@ -428,6 +432,35 @@ impl Collector {
                 }
                 StatementKind::AlterTable
             }
+            Statement::Merge(m) => {
+                self.write_target(&m.target, Access::Update);
+                self.table_with_joins(&TableWithJoins { relation: m.source.clone(), joins: vec![] });
+                self.expr(&m.on);
+                self.ops.insert(Operation::Upsert);
+                for c in &m.clauses {
+                    match c {
+                        MergeClause::Matched { condition, action } => {
+                            if let Some(c) = condition {
+                                self.expr(c);
+                            }
+                            if let MergeAction::Update { assignments, selection, delete_where } = action {
+                                for a in assignments {
+                                    self.expr(&a.value);
+                                }
+                                for e in selection.iter().chain(delete_where) {
+                                    self.expr(e);
+                                }
+                            }
+                        }
+                        MergeClause::NotMatched { condition, values, selection, .. } => {
+                            for e in condition.iter().chain(values).chain(selection) {
+                                self.expr(e);
+                            }
+                        }
+                    }
+                }
+                StatementKind::Merge
+            }
             Statement::Truncate(t) => {
                 for n in &t.tables {
                     self.table(n, Access::Delete);
@@ -534,6 +567,13 @@ impl Collector {
         if let Some(w) = &s.selection {
             self.ops.insert(Operation::Filter);
             self.expr(w);
+        }
+        if let Some(h) = &s.hierarchy {
+            self.ops.insert(Operation::Hierarchy);
+            if let Some(st) = &h.start_with {
+                self.expr(st);
+            }
+            self.expr(&h.connect_by);
         }
         if !s.group_by.is_empty() {
             self.ops.insert(Operation::Group);

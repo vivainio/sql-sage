@@ -220,6 +220,7 @@ impl<'a> Emitter<'a> {
             Statement::Insert(i) => self.insert(i),
             Statement::Update(u) => self.update(u),
             Statement::Delete(d) => self.delete(d),
+            Statement::Merge(m) => self.merge(m),
             Statement::CreateTable(c) => self.create_table(c),
             Statement::CreateIndex(c) => self.create_index(c),
             Statement::CreateSequence(c) => self.create_sequence(c),
@@ -295,7 +296,9 @@ impl<'a> Emitter<'a> {
     }
 
     fn assignment(&self, a: &Assignment) -> R {
-        Ok(format!("{} = {}", self.object_name(&a.column), self.expr(&a.value)?))
+        let cols: Vec<String> = a.columns.iter().map(|c| self.object_name(c)).collect();
+        let cols = if cols.len() == 1 { cols[0].clone() } else { format!("({})", cols.join(", ")) };
+        Ok(format!("{cols} = {}", self.expr(&a.value)?))
     }
 
     fn update(&self, u: &Update) -> R {
@@ -309,6 +312,55 @@ impl<'a> Emitter<'a> {
             out.push_str(&format!(" WHERE {}", self.expr(s)?));
         }
         out.push_str(&self.returning(&u.returning)?);
+        Ok(out)
+    }
+
+    fn merge(&self, m: &Merge) -> R {
+        self.need(|d| d.name() != "sqlite", "MERGE")?;
+        let mut out = format!(
+            "MERGE INTO {} USING {} ON {}",
+            self.table_factor(&m.target)?,
+            self.table_factor(&m.source)?,
+            self.expr(&m.on)?
+        );
+        for c in &m.clauses {
+            match c {
+                MergeClause::Matched { condition, action } => {
+                    out.push_str(" WHEN MATCHED");
+                    if let Some(c) = condition {
+                        out.push_str(&format!(" AND {}", self.expr(c)?));
+                    }
+                    out.push_str(" THEN ");
+                    match action {
+                        MergeAction::Update { assignments, selection, delete_where } => {
+                            out.push_str(&format!("UPDATE SET {}", self.list(assignments, Self::assignment)?));
+                            if let Some(w) = selection {
+                                out.push_str(&format!(" WHERE {}", self.expr(w)?));
+                            }
+                            if let Some(w) = delete_where {
+                                out.push_str(&format!(" DELETE WHERE {}", self.expr(w)?));
+                            }
+                        }
+                        MergeAction::Delete => out.push_str("DELETE"),
+                        MergeAction::DoNothing => out.push_str("DO NOTHING"),
+                    }
+                }
+                MergeClause::NotMatched { condition, columns, values, selection } => {
+                    out.push_str(" WHEN NOT MATCHED");
+                    if let Some(c) = condition {
+                        out.push_str(&format!(" AND {}", self.expr(c)?));
+                    }
+                    out.push_str(" THEN INSERT");
+                    if !columns.is_empty() {
+                        out.push_str(&format!(" {}", self.paren_idents(columns)));
+                    }
+                    out.push_str(&format!(" VALUES ({})", self.list(values, Self::expr)?));
+                    if let Some(w) = selection {
+                        out.push_str(&format!(" WHERE {}", self.expr(w)?));
+                    }
+                }
+            }
+        }
         Ok(out)
     }
 
@@ -877,6 +929,17 @@ impl<'a> Emitter<'a> {
         if let Some(w) = &s.selection {
             out.push_str(&format!(" WHERE {}", self.expr(w)?));
         }
+        if let Some(h) = &s.hierarchy {
+            self.need(|d| d.supports_connect_by(), "CONNECT BY")?;
+            if let Some(st) = &h.start_with {
+                out.push_str(&format!(" START WITH {}", self.expr(st)?));
+            }
+            out.push_str(&format!(
+                " CONNECT BY {}{}",
+                if h.nocycle { "NOCYCLE " } else { "" },
+                self.expr(&h.connect_by)?
+            ));
+        }
         if !s.group_by.is_empty() {
             out.push_str(&format!(" GROUP BY {}", self.list(&s.group_by, Self::expr)?));
         }
@@ -1061,6 +1124,14 @@ impl<'a> Emitter<'a> {
                 let inner = self.expr(expr)?;
                 match op {
                     UnaryOperator::Not => format!("NOT {inner}"),
+                    UnaryOperator::Prior => {
+                        self.need(|d| d.supports_connect_by(), "PRIOR")?;
+                        format!("PRIOR {inner}")
+                    }
+                    UnaryOperator::ConnectByRoot => {
+                        self.need(|d| d.supports_connect_by(), "CONNECT_BY_ROOT")?;
+                        format!("CONNECT_BY_ROOT {inner}")
+                    }
                     UnaryOperator::Plus if matches!(**expr, Expr::UnaryOp { .. }) => format!("+ {inner}"),
                     UnaryOperator::Minus if matches!(**expr, Expr::UnaryOp { .. }) => format!("- {inner}"),
                     UnaryOperator::Plus => format!("+{inner}"),

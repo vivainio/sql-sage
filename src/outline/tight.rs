@@ -62,6 +62,7 @@ impl Outline {
             | Statement::CreateView(_)
             | Statement::AlterTable(_)
             | Statement::Truncate(_)
+            | Statement::Merge(_)
             | Statement::Other(_)
             | Statement::Drop(_) => self.statement(s),
         }
@@ -247,6 +248,12 @@ impl Outline {
         let mut l = self.tight_from(&s.from);
         if let Some(w) = &s.selection {
             l.push(self.tight_filter("?", w));
+        }
+        if let Some(h) = &s.hierarchy {
+            if let Some(st) = &h.start_with {
+                l.push(self.tight_filter("start", st));
+            }
+            l.push(self.tight_filter(if h.nocycle { "connect nocycle" } else { "connect" }, &h.connect_by));
         }
         if !s.group_by.is_empty() {
             let items: Vec<String> = s.group_by.iter().map(|e| self.expr(e)).collect();

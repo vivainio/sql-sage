@@ -18,6 +18,7 @@ pub enum Statement {
     Insert(Insert),
     Update(Update),
     Delete(Delete),
+    Merge(Merge),
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     CreateSequence(CreateSequence),
@@ -95,8 +96,17 @@ pub struct Select {
     pub projection: Vec<SelectItem>,
     pub from: Vec<TableWithJoins>,
     pub selection: Option<Expr>,
+    /// Oracle `START WITH ... CONNECT BY ...`
+    pub hierarchy: Option<Hierarchy>,
     pub group_by: Vec<Expr>,
     pub having: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hierarchy {
+    pub start_with: Option<Expr>,
+    pub nocycle: bool,
+    pub connect_by: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -313,6 +323,10 @@ pub enum UnaryOperator {
     Plus,
     Minus,
     Not,
+    /// Oracle `PRIOR expr` in `CONNECT BY`
+    Prior,
+    /// Oracle `CONNECT_BY_ROOT expr`
+    ConnectByRoot,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -360,7 +374,8 @@ pub enum OnConflictAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assignment {
-    pub column: ObjectName,
+    /// More than one for `SET (a, b) = (SELECT ...)`.
+    pub columns: Vec<ObjectName>,
     pub value: Expr,
 }
 
@@ -448,6 +463,33 @@ pub enum TableConstraintKind {
     Unique(Vec<Ident>),
     ForeignKey { columns: Vec<Ident>, reference: ForeignKeyRef },
     Check(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Merge {
+    pub target: TableFactor,
+    pub source: TableFactor,
+    pub on: Expr,
+    pub clauses: Vec<MergeClause>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MergeClause {
+    Matched { condition: Option<Expr>, action: MergeAction },
+    NotMatched { condition: Option<Expr>, columns: Vec<Ident>, values: Vec<Expr>, selection: Option<Expr> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum MergeAction {
+    /// `delete_where` is Oracle's `DELETE WHERE` after the assignments.
+    Update {
+        assignments: Vec<Assignment>,
+        selection: Option<Expr>,
+        delete_where: Option<Expr>,
+    },
+    Delete,
+    DoNothing,
 }
 
 #[derive(Debug, Clone, PartialEq)]

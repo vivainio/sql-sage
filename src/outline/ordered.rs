@@ -28,6 +28,7 @@ impl Outline {
             Statement::Insert(i) => self.insert(i),
             Statement::Update(u) => self.update(u),
             Statement::Delete(d) => self.delete(d),
+            Statement::Merge(m) => self.merge(m),
             Statement::CreateTable(c) => self.create_table(c),
             Statement::CreateIndex(c) => self.create_index(c),
             Statement::CreateSequence(c) => self.create_sequence(c),
@@ -103,8 +104,14 @@ impl Outline {
     }
 
     pub(super) fn assignments(&self, a: &[Assignment]) -> String {
-        let items: Vec<String> =
-            a.iter().map(|x| format!("{} = {}", self.name(&x.column), self.expr(&x.value))).collect();
+        let items: Vec<String> = a
+            .iter()
+            .map(|x| {
+                let cols: Vec<String> = x.columns.iter().map(|c| self.name(c)).collect();
+                let cols = if cols.len() == 1 { cols[0].clone() } else { format!("({})", cols.join(", ")) };
+                format!("{cols} = {}", self.expr(&x.value))
+            })
+            .collect();
         match items.as_slice() {
             [one] if !one.contains('\n') => format!("set {one}"),
             _ => format!("set\n{}", indent(&items.join("\n"), 2)),
@@ -120,6 +127,51 @@ impl Outline {
             lines.push(self.filter("filter", s));
         }
         lines.extend(self.returning(&u.returning));
+        lines.join("\n")
+    }
+
+    pub(super) fn merge(&self, m: &Merge) -> String {
+        let mut lines = vec![
+            format!("merge into {}", self.table_factor(&m.target)),
+            format!("using {}", self.table_factor(&m.source)),
+            self.filter("on", &m.on),
+        ];
+        for c in &m.clauses {
+            match c {
+                MergeClause::Matched { condition, action } => {
+                    let mut head = String::from("when matched");
+                    if let Some(c) = condition {
+                        head.push_str(&format!(" and {}", self.expr(c)));
+                    }
+                    lines.push(head);
+                    match action {
+                        MergeAction::Update { assignments, selection, delete_where } => {
+                            lines.push(indent(&format!("update {}", self.assignments(assignments)), 2));
+                            if let Some(w) = selection {
+                                lines.push(indent(&self.filter("filter", w), 2));
+                            }
+                            if let Some(w) = delete_where {
+                                lines.push(indent(&self.filter("delete where", w), 2));
+                            }
+                        }
+                        MergeAction::Delete => lines.push(indent("delete", 2)),
+                        MergeAction::DoNothing => lines.push(indent("do nothing", 2)),
+                    }
+                }
+                MergeClause::NotMatched { condition, columns, values, selection } => {
+                    let mut head = String::from("when not matched");
+                    if let Some(c) = condition {
+                        head.push_str(&format!(" and {}", self.expr(c)));
+                    }
+                    lines.push(head);
+                    let cols = if columns.is_empty() { String::new() } else { format!(" ({})", self.ids(columns)) };
+                    lines.push(indent(&format!("insert{cols} values ({})", self.exprs(values)), 2));
+                    if let Some(w) = selection {
+                        lines.push(indent(&self.filter("filter", w), 2));
+                    }
+                }
+            }
+        }
         lines.join("\n")
     }
 
@@ -402,6 +454,12 @@ impl Outline {
         if let Some(w) = &s.selection {
             lines.push(self.filter("filter", w));
         }
+        if let Some(h) = &s.hierarchy {
+            if let Some(st) = &h.start_with {
+                lines.push(self.filter("start with", st));
+            }
+            lines.push(self.filter(if h.nocycle { "connect by nocycle" } else { "connect by" }, &h.connect_by));
+        }
         if !s.group_by.is_empty() {
             let items: Vec<String> = s.group_by.iter().map(|e| self.expr(e)).collect();
             lines.push(list_block("group", &items));
@@ -533,6 +591,8 @@ impl Outline {
                 let inner = self.expr(expr);
                 match op {
                     UnaryOperator::Not => format!("not {inner}"),
+                    UnaryOperator::Prior => format!("prior {inner}"),
+                    UnaryOperator::ConnectByRoot => format!("connect_by_root {inner}"),
                     UnaryOperator::Plus => format!("+{inner}"),
                     UnaryOperator::Minus if inner.starts_with('-') => format!("- {inner}"),
                     UnaryOperator::Minus => format!("-{inner}"),

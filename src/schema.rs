@@ -203,6 +203,7 @@ impl Schema {
             | Statement::Insert(_)
             | Statement::Update(_)
             | Statement::Delete(_)
+            | Statement::Merge(_)
             | Statement::Truncate(_)
             | Statement::Other(_) => Ok(()),
         }

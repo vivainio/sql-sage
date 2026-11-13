@@ -386,6 +386,8 @@ impl<'a> Parser<'a> {
             self.parse_create()
         } else if self.peek_keyword("ALTER") && self.peek_nth_keyword(1, "TABLE") {
             self.parse_alter_table()
+        } else if self.peek_keyword("MERGE") {
+            self.parse_merge()
         } else if self.peek_keyword("TRUNCATE") {
             self.parse_truncate()
         } else if self.peek_keyword("RENAME") {
@@ -399,6 +401,61 @@ impl<'a> Parser<'a> {
         } else {
             self.expected("a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER or DROP)")
         }
+    }
+
+    fn parse_merge(&mut self) -> Result<Statement> {
+        self.expect_keyword("MERGE")?;
+        self.parse_keyword("INTO");
+        let target = self.parse_table_factor()?;
+        self.expect_keyword("USING")?;
+        let source = self.parse_table_factor()?;
+        self.expect_keyword("ON")?;
+        let on = self.parse_expr()?;
+        let mut clauses = vec![];
+        while self.parse_keyword("WHEN") {
+            let matched = if self.parse_keywords(&["NOT", "MATCHED"]) {
+                false
+            } else {
+                self.expect_keyword("MATCHED")?;
+                true
+            };
+            let condition = if self.parse_keyword("AND") { Some(self.parse_expr()?) } else { None };
+            self.expect_keyword("THEN")?;
+            if matched {
+                let action = if self.parse_keyword("UPDATE") {
+                    self.expect_keyword("SET")?;
+                    let assignments = self.parse_comma_separated(Self::parse_assignment)?;
+                    let selection = if self.parse_keyword("WHERE") { Some(self.parse_expr()?) } else { None };
+                    let delete_where = if self.parse_keyword("DELETE") {
+                        self.expect_keyword("WHERE")?;
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    MergeAction::Update { assignments, selection, delete_where }
+                } else if self.parse_keyword("DELETE") {
+                    MergeAction::Delete
+                } else if self.parse_keywords(&["DO", "NOTHING"]) {
+                    MergeAction::DoNothing
+                } else {
+                    return self.expected("UPDATE, DELETE or DO NOTHING");
+                };
+                clauses.push(MergeClause::Matched { condition, action });
+            } else {
+                self.expect_keyword("INSERT")?;
+                let columns = if *self.peek_token() == Token::LParen { self.parse_paren_idents()? } else { vec![] };
+                self.expect_keyword("VALUES")?;
+                self.expect_token(&Token::LParen)?;
+                let values = self.parse_comma_separated(Self::parse_expr)?;
+                self.expect_token(&Token::RParen)?;
+                let selection = if self.parse_keyword("WHERE") { Some(self.parse_expr()?) } else { None };
+                clauses.push(MergeClause::NotMatched { condition, columns, values, selection });
+            }
+        }
+        if clauses.is_empty() {
+            return self.expected("WHEN [NOT] MATCHED");
+        }
+        Ok(Statement::Merge(Merge { target, source, on, clauses }))
     }
 
     fn parse_truncate(&mut self) -> Result<Statement> {
@@ -568,9 +625,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_assignment(&mut self) -> Result<Assignment> {
-        let column = self.parse_object_name()?;
+        let columns = if self.consume_token(&Token::LParen) {
+            let cols = self.parse_comma_separated(Self::parse_object_name)?;
+            self.expect_token(&Token::RParen)?;
+            cols
+        } else {
+            vec![self.parse_object_name()?]
+        };
         self.expect_token(&Token::Eq)?;
-        Ok(Assignment { column, value: self.parse_expr()? })
+        Ok(Assignment { columns, value: self.parse_expr()? })
     }
 
     fn parse_update(&mut self) -> Result<Statement> {
@@ -1524,10 +1587,36 @@ impl<'a> Parser<'a> {
         let from =
             if self.parse_keyword("FROM") { self.parse_comma_separated(Self::parse_table_and_joins)? } else { vec![] };
         let selection = if self.parse_keyword("WHERE") { Some(self.parse_expr()?) } else { None };
+        let hierarchy = self.parse_hierarchy()?;
         let group_by =
             if self.parse_keywords(&["GROUP", "BY"]) { self.parse_comma_separated(Self::parse_expr)? } else { vec![] };
         let having = if self.parse_keyword("HAVING") { Some(self.parse_expr()?) } else { None };
-        Ok(Select { distinct, projection, from, selection, group_by, having })
+        Ok(Select { distinct, projection, from, selection, hierarchy, group_by, having })
+    }
+
+    /// `START WITH cond CONNECT BY [NOCYCLE] cond`, in either order.
+    fn parse_hierarchy(&mut self) -> Result<Option<Hierarchy>> {
+        if !self.dialect.supports_connect_by() {
+            return Ok(None);
+        }
+        let mut start_with = None;
+        let mut connect_by = None;
+        let mut nocycle = false;
+        loop {
+            if start_with.is_none() && self.parse_keywords(&["START", "WITH"]) {
+                start_with = Some(self.parse_expr()?);
+            } else if connect_by.is_none() && self.parse_keywords(&["CONNECT", "BY"]) {
+                nocycle = self.parse_keyword("NOCYCLE");
+                connect_by = Some(self.parse_expr()?);
+            } else {
+                break;
+            }
+        }
+        match connect_by {
+            Some(connect_by) => Ok(Some(Hierarchy { start_with, nocycle, connect_by })),
+            None if start_with.is_some() => self.expected("CONNECT BY"),
+            None => Ok(None),
+        }
     }
 
     fn parse_select_item(&mut self) -> Result<SelectItem> {
@@ -1559,7 +1648,19 @@ impl<'a> Parser<'a> {
             return Ok(Some(self.parse_ident()?));
         }
         if let Token::Word(w) = self.peek_token() {
-            if w.quote.is_some() || !self.is_reserved(&w.value) {
+            // Oracle does not reserve CASE, so `CASE ... END CASE` aliases a case expression.
+            let case_alias = w.is_keyword("CASE")
+                && self.dialect.supports_physical_clauses()
+                && self.index > 0
+                && matches!(&self.tokens[self.index - 1].token, Token::Word(p) if p.is_keyword("END"));
+            let hierarchy_clause = self.dialect.supports_connect_by()
+                && w.quote.is_none()
+                && ((w.is_keyword("START") && self.peek_nth_keyword(1, "WITH"))
+                    || (w.is_keyword("CONNECT") && self.peek_nth_keyword(1, "BY")));
+            if hierarchy_clause {
+                return Ok(None);
+            }
+            if w.quote.is_some() || !self.is_reserved(&w.value) || case_alias {
                 return Ok(Some(self.parse_ident()?));
             }
         }
@@ -1899,6 +2000,10 @@ impl<'a> Parser<'a> {
             let upper = w.value.to_ascii_uppercase();
             let paren = *self.peek_token() == Token::LParen;
             match upper.as_str() {
+                "PRIOR" | "CONNECT_BY_ROOT" if self.dialect.supports_connect_by() && !paren => {
+                    let op = if upper == "PRIOR" { UnaryOperator::Prior } else { UnaryOperator::ConnectByRoot };
+                    return Ok(Expr::UnaryOp { op, expr: Box::new(self.parse_subexpr(60)?) });
+                }
                 "NULL" => return Ok(Expr::Value(Value::Null)),
                 "TRUE" => return Ok(Expr::Value(Value::Boolean(true))),
                 "FALSE" => return Ok(Expr::Value(Value::Boolean(false))),

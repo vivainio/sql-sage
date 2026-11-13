@@ -113,8 +113,8 @@ fn analysis_agrees_with_transpile() {
 #[test]
 fn function_catalogs_decide_availability() {
     // exists in another dialect but not on the target
-    let r = report(Postgres, Sqlite, "SELECT initcap(a), translate(a, 'x', 'y') FROM t");
-    assert!(has(&r, Severity::Incompatible, "INITCAP does not exist in sqlite (available in oracle/postgres)"));
+    let r = report(Postgres, Sqlite, "SELECT soundex(a), translate(a, 'x', 'y') FROM t");
+    assert!(has(&r, Severity::Incompatible, "SOUNDEX does not exist in sqlite (available in oracle)"));
     assert!(has(&r, Severity::Incompatible, "TRANSLATE does not exist in sqlite (available in oracle/postgres)"));
     // present on the target: nothing to report, even where an old hint existed
     let r = report(Postgres, Sqlite, "SELECT string_agg(a, ','), mod(a, 2), concat_ws('-', a, b) FROM t");

@@ -80,7 +80,7 @@ pagination (`LIMIT`/`OFFSET` vs `FETCH FIRST`), `MINUS`/`EXCEPT`, `FROM dual`, b
 `%` vs `MOD`, booleans, Oracle/PostgreSQL functions SQLite lacks, rewritten to SQLite constructs when they have an
 exact equivalent (`NVL`, `NVL2`, `DECODE`, `GREATEST`/`LEAST`, `LPAD`/`RPAD`, `LISTAGG`/`STRING_AGG`,
 `SYSDATE`/`NOW`/`CURRENT_DATE`, `ADD_MONTHS`, `LAST_DAY`, `TRUNC` on dates, `CHR`, `LNNVL`, `NANVL`, `INSTR` with
-a start, `TO_NUMBER(x)`, `STDDEV`/`VARIANCE` and their `_POP`/`_SAMP` forms, and `TO_CHAR`/`TO_DATE` with
+a start, `TO_NUMBER(x)`, `MONTHS_BETWEEN`, `INITCAP` (ASCII letters), `STDDEV`/`VARIANCE` and their `_POP`/`_SAMP` forms, and `TO_CHAR`/`TO_DATE` with
 masks `strftime` can reproduce; other masks stay an error), `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
 types and similar constructs error on engines that lack them.
 

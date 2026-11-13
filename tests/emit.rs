@@ -300,3 +300,19 @@ fn dates_and_statistics_become_sqlite_constructs() {
     assert_eq!(o("SELECT VAR_POP(x) FROM t"), "SELECT max((avg((x) * (x)) - avg(x) * avg(x)), 0) FROM t;");
     assert!(o("SELECT STDDEV(DISTINCT x) FROM t").contains("STDDEV(DISTINCT x)"));
 }
+
+#[test]
+fn months_between_and_initcap_become_sqlite_constructs() {
+    let o = |sql: &str| t(Oracle, Sqlite, sql);
+    let mb = o("SELECT MONTHS_BETWEEN(a, b) FROM t");
+    assert!(
+        mb.starts_with("SELECT ((CAST(strftime('%Y', a) AS INTEGER) - CAST(strftime('%Y', b) AS INTEGER)) * 12"),
+        "{mb}"
+    );
+    assert!(mb.contains("/ 86400.0) / 31 END) FROM t;"), "{mb}");
+    let ic = o("SELECT INITCAP(n) FROM t");
+    assert!(ic.starts_with("SELECT CASE WHEN n IS NULL THEN NULL ELSE (WITH RECURSIVE w(i, r) AS"), "{ic}");
+    assert!(ic.contains("length(n)"), "{ic}");
+    // other targets keep the call
+    assert_eq!(t(Oracle, Postgres, "SELECT INITCAP(n) FROM t"), "SELECT INITCAP(n) FROM t;");
+}

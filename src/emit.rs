@@ -1611,6 +1611,40 @@ impl<'a> Emitter<'a> {
                 self.done(&format!("{name} -> avg()/count() arithmetic"), out)
             })(
             )),
+            ("MONTHS_BETWEEN", [a, b]) => Some((|| {
+                let (a, b) = (self.expr(a)?, self.expr(b)?);
+                let part = |d: &str, f: &str| format!("CAST(strftime('{f}', {d}) AS INTEGER)");
+                let secs = |d: &str| format!("({} * 3600 + {} * 60 + {})", part(d, "%H"), part(d, "%M"), part(d, "%S"));
+                let last = |d: &str| format!("strftime('%d', date({d}, '+1 day')) = '01'");
+                // Oracle: whole months when both are the same day of the month or both
+                // last days; otherwise the day difference (with time) counts as 1/31 month
+                let out = format!(
+                    "(({ya} - {yb}) * 12 + ({ma} - {mb}) + CASE WHEN {da} = {db} OR ({la} AND {lb}) THEN 0 \
+                     ELSE ({da} - {db} + ({sa} - {sb}) / 86400.0) / 31 END)",
+                    ya = part(&a, "%Y"),
+                    yb = part(&b, "%Y"),
+                    ma = part(&a, "%m"),
+                    mb = part(&b, "%m"),
+                    da = part(&a, "%d"),
+                    db = part(&b, "%d"),
+                    la = last(&a),
+                    lb = last(&b),
+                    sa = secs(&a),
+                    sb = secs(&b),
+                );
+                self.done("MONTHS_BETWEEN -> strftime arithmetic (31-day months)", out)
+            })()),
+            ("INITCAP", [x]) => Some(self.expr(x).and_then(|x| {
+                // walk the string a character at a time: upper-case after a non-alphanumeric
+                let out = format!(
+                    "CASE WHEN {x} IS NULL THEN NULL ELSE (WITH RECURSIVE w(i, r) AS (SELECT 1, '' UNION ALL \
+                     SELECT i + 1, r || CASE WHEN i = 1 OR substr(lower({x}), i - 1, 1) NOT GLOB '[a-z0-9]' \
+                     THEN upper(substr({x}, i, 1)) ELSE lower(substr({x}, i, 1)) END FROM w WHERE i <= length({x})) \
+                     SELECT r FROM w ORDER BY i DESC LIMIT 1) END"
+                );
+                self.note(Severity::Warning, "INITCAP -> recursive subquery: only ASCII letters change case", None);
+                self.done("INITCAP -> recursive subquery", out)
+            })),
             _ => None,
         }
     }

@@ -117,8 +117,9 @@ fn compat_code() {
         code(Postgres, "SELECT a FROM t GROUP BY a HAVING ratio_to_report(a) OVER () > 1 AND pg_sleep(1) > 1"),
         "-"
     );
-    // catalogs: initcap exists in Oracle and Postgres only
-    assert_eq!(code(Postgres, "SELECT initcap(a), lpad(a, 5) FROM t"), "ora,pg");
+    // catalogs: translate exists in Oracle and Postgres only; initcap and lpad are rewritten for SQLite
+    assert_eq!(code(Postgres, "SELECT translate(a, 'x', 'y') FROM t"), "ora,pg");
+    assert_eq!(code(Postgres, "SELECT initcap(a), lpad(a, 5) FROM t"), "ora,pg,lite");
     assert_eq!(code(Postgres, "SELECT string_agg(a, ',') FROM t"), "pg,lite");
     assert_eq!(code(Oracle, "SELECT ratio_to_report(a) OVER () FROM t"), "ora");
     // same name, different meaning

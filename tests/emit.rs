@@ -265,3 +265,38 @@ fn more_oracle_functions_become_sqlite_constructs() {
     assert_eq!(o("SELECT INSTR(x, 'a', -1) FROM t"), "SELECT INSTR(x, 'a', -1) FROM t;");
     assert_eq!(o("SELECT GREATEST(a) FROM t"), "SELECT GREATEST(a) FROM t;");
 }
+
+#[test]
+fn dates_and_statistics_become_sqlite_constructs() {
+    let o = |sql: &str| t(Oracle, Sqlite, sql);
+    assert_eq!(o("SELECT CURRENT_DATE FROM dual"), "SELECT datetime('now', 'localtime');");
+    assert_eq!(t(Postgres, Sqlite, "SELECT CURRENT_DATE"), "SELECT date('now', 'localtime');");
+    assert_eq!(o("SELECT NANVL(a, 0) * 2, NANVL(a + b, 0) FROM t"), "SELECT a * 2, (a + b) FROM t;");
+    assert_eq!(
+        o("SELECT ADD_MONTHS(d, 1) FROM t"),
+        "SELECT CASE WHEN strftime('%d', date(d, '+1 day')) = '01' THEN date(d, 'start of month', (1 + 1) || ' months', '-1 day') \
+         ELSE min(date(d, 'start of month', 1 || ' months', (CAST(strftime('%d', d) AS INTEGER) - 1) || ' days'), \
+         date(d, 'start of month', (1 + 1) || ' months', '-1 day')) END FROM t;"
+    );
+    // units that are known to be dates
+    assert_eq!(
+        o("SELECT TRUNC(d, 'MM'), TRUNC(d, 'YYYY'), TRUNC(d, 'DD') FROM t"),
+        "SELECT date(d, 'start of month'), date(d, 'start of year'), date(d) FROM t;"
+    );
+    assert_eq!(
+        o("SELECT TRUNC(d, 'MI'), TRUNC(d, 'HH24') FROM t"),
+        "SELECT strftime('%Y-%m-%d %H:%M:00', d), strftime('%Y-%m-%d %H:00:00', d) FROM t;"
+    );
+    assert_eq!(o("SELECT TRUNC(SYSDATE) FROM dual"), "SELECT date(datetime('now', 'localtime'));");
+    // a bare TRUNC(x) may be numeric: left alone, as are units without a SQLite equivalent
+    assert_eq!(
+        o("SELECT TRUNC(x), TRUNC(x, 2), TRUNC(d, 'Q') FROM t"),
+        "SELECT TRUNC(x), TRUNC(x, 2), TRUNC(d, 'Q') FROM t;"
+    );
+    // STDDEV/VARIANCE: Oracle gives 0 for one row, PostgreSQL NULL
+    assert!(o("SELECT STDDEV(x) FROM t").contains("CASE WHEN count(x) = 1 THEN 0"));
+    assert!(t(Postgres, Sqlite, "SELECT stddev(x) FROM t").starts_with("SELECT sqrt(max((avg((x) * (x))"));
+    assert!(!t(Postgres, Sqlite, "SELECT stddev(x) FROM t").contains("CASE WHEN"));
+    assert_eq!(o("SELECT VAR_POP(x) FROM t"), "SELECT max((avg((x) * (x)) - avg(x) * avg(x)), 0) FROM t;");
+    assert!(o("SELECT STDDEV(DISTINCT x) FROM t").contains("STDDEV(DISTINCT x)"));
+}

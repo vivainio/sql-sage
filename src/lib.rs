@@ -64,6 +64,7 @@ impl std::error::Error for TranspileError {}
 /// (`;`-terminated, one per line).
 pub fn transpile(from: DialectKind, to: DialectKind, sql: &str) -> Result<String, TranspileError> {
     let stmts = parse_sql(from.dialect().as_ref(), sql).map_err(TranspileError::Parse)?;
+    let source = from.dialect();
     let target = to.dialect();
     let mut out = Vec::new();
     for s in &stmts {
@@ -89,7 +90,7 @@ pub fn transpile(from: DialectKind, to: DialectKind, sql: &str) -> Result<String
                 }
             }
         }
-        out.push(format!("{};", s.to_sql(target.as_ref()).map_err(TranspileError::Emit)?));
+        out.push(format!("{};", s.to_sql_from(source.as_ref(), target.as_ref()).map_err(TranspileError::Emit)?));
     }
     Ok(out.join("\n"))
 }

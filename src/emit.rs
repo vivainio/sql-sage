@@ -66,6 +66,12 @@ impl<'a> Emitter<'a> {
         Self::build(None, Some(target), false)
     }
 
+    /// Emitting for [`crate::transpile`]: fails on what cannot be expressed, but
+    /// knows the source dialect, so semantics that depend on it can be chosen.
+    pub fn for_transpile(source: &'a dyn Dialect, target: &'a dyn Dialect) -> Self {
+        Self::build(Some(source), Some(target), false)
+    }
+
     /// Collecting mode used by [`crate::compat::analyze`]: never fails, records
     /// everything that is rewritten, risky or impossible on `target`.
     pub fn for_analysis(source: &'a dyn Dialect, target: &'a dyn Dialect) -> Self {
@@ -1148,13 +1154,18 @@ impl<'a> Emitter<'a> {
                     && self.rewrites_for_sqlite()
                     && matches!(
                         i.value.to_ascii_uppercase().as_str(),
-                        "SYSDATE" | "SYSTIMESTAMP" | "LOCALTIMESTAMP"
+                        "SYSDATE" | "SYSTIMESTAMP" | "LOCALTIMESTAMP" | "CURRENT_DATE"
                     ) =>
             {
-                let out = "datetime('now', 'localtime')".to_string();
-                let what = format!("{} -> datetime('now', 'localtime')", i.value.to_ascii_uppercase());
-                self.note(Severity::Rewritten, what, Some(out.clone()));
-                out
+                let name = i.value.to_ascii_uppercase();
+                // an Oracle DATE carries a time of day; PostgreSQL's current_date does not
+                let out = if name == "CURRENT_DATE" && !self.source.is_some_and(|s| s.name() == "oracle") {
+                    "date('now', 'localtime')"
+                } else {
+                    "datetime('now', 'localtime')"
+                };
+                self.note(Severity::Rewritten, format!("{name} -> {out}"), Some(out.to_string()));
+                out.to_string()
             }
             Expr::Identifier(i) => {
                 if let (true, Some(d), None) = (self.collect, self.target, i.quote_style) {
@@ -1455,6 +1466,7 @@ impl<'a> Emitter<'a> {
                     rewritten(out, &format!("{name} -> group_concat"))
                 })())
             }
+            _ if f.distinct => None,
             _ => self.sqlite_rewrite_more(&name, &args),
         }
     }
@@ -1540,6 +1552,65 @@ impl<'a> Emitter<'a> {
                 };
                 Some(self.expr(x).and_then(|x| self.done(&format!("TO_DATE -> {f}"), format!("{f}({x})"))))
             }
+            ("NANVL", [a, _]) => Some(self.expr(a).and_then(|a| {
+                self.note(Severity::Warning, "NANVL -> its first argument: SQLite stores NaN as NULL", None);
+                let simple = a.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.'));
+                self.done("NANVL -> first argument", if simple { a } else { format!("({a})") })
+            })),
+            ("ADD_MONTHS", [d, n]) => Some((|| {
+                let (d, n) = (self.expr(d)?, self.expr(n)?);
+                // Oracle: the last day of a month stays the last day; otherwise the day is kept, clamped
+                let last = format!("date({d}, 'start of month', ({n} + 1) || ' months', '-1 day')");
+                let same = format!(
+                    "date({d}, 'start of month', {n} || ' months', (CAST(strftime('%d', {d}) AS INTEGER) - 1) || ' days')"
+                );
+                let out = format!(
+                    "CASE WHEN strftime('%d', date({d}, '+1 day')) = '01' THEN {last} ELSE min({same}, {last}) END"
+                );
+                self.note(Severity::Warning, "ADD_MONTHS -> date arithmetic: the time of day is dropped", None);
+                self.done("ADD_MONTHS -> date(..., 'start of month', n months)", out)
+            })()),
+            ("TRUNC", [x, Expr::Value(Value::String(unit))]) => {
+                let modifiers = match unit.to_ascii_uppercase().as_str() {
+                    "DD" | "DDD" | "J" => "date({x})".to_string(),
+                    "MM" | "MON" | "MONTH" | "RM" => "date({x}, 'start of month')".to_string(),
+                    "YYYY" | "YEAR" | "SYYYY" | "YY" => "date({x}, 'start of year')".to_string(),
+                    "HH" | "HH12" | "HH24" => "strftime('%Y-%m-%d %H:00:00', {x})".to_string(),
+                    "MI" => "strftime('%Y-%m-%d %H:%M:00', {x})".to_string(),
+                    _ => return None,
+                };
+                Some(
+                    self.expr(x)
+                        .and_then(|x| self.done("TRUNC(date, unit) -> date()/strftime", modifiers.replace("{x}", &x))),
+                )
+            }
+            // without a unit, TRUNC is only a date truncation when the argument is evidently a date
+            ("TRUNC", [x]) if is_date_expr(x) => {
+                Some(self.expr(x).and_then(|x| self.done("TRUNC(date) -> date()", format!("date({x})"))))
+            }
+            ("STDDEV" | "STDDEV_POP" | "STDDEV_SAMP" | "VARIANCE" | "VAR_POP" | "VAR_SAMP", [x]) => Some((|| {
+                let x = self.expr(x)?;
+                let pop = format!("(avg(({x}) * ({x})) - avg({x}) * avg({x}))");
+                let samp = format!("{pop} * count({x}) / (count({x}) - 1)");
+                let bare = matches!(name, "STDDEV" | "VARIANCE");
+                // Oracle's STDDEV/VARIANCE give 0 for one row, the *_SAMP forms (and PostgreSQL) NULL
+                let var = match name {
+                    "STDDEV_POP" | "VAR_POP" => pop,
+                    _ if bare && !self.source.is_some_and(|s| s.name() == "postgres") => {
+                        format!("CASE WHEN count({x}) = 1 THEN 0 ELSE {samp} END")
+                    }
+                    _ => samp,
+                };
+                let out =
+                    if name.starts_with("STDDEV") { format!("sqrt(max({var}, 0))") } else { format!("max({var}, 0)") };
+                self.note(
+                    Severity::Warning,
+                    format!("{name} is computed from sums: less precise than the native aggregate (sqrt needs SQLite math functions)"),
+                    None,
+                );
+                self.done(&format!("{name} -> avg()/count() arithmetic"), out)
+            })(
+            )),
             _ => None,
         }
     }
@@ -1628,6 +1699,30 @@ impl<'a> Emitter<'a> {
     }
 }
 
+/// Is `e` evidently a date or timestamp (so that `TRUNC(e)` is not numeric)?
+fn is_date_expr(e: &Expr) -> bool {
+    let name = match e {
+        Expr::Identifier(i) if i.quote_style.is_none() => &i.value,
+        Expr::Function(f) => match f.name.0.as_slice() {
+            [n] if n.quote_style.is_none() => &n.value,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "SYSDATE"
+            | "SYSTIMESTAMP"
+            | "LOCALTIMESTAMP"
+            | "CURRENT_DATE"
+            | "CURRENT_TIMESTAMP"
+            | "NOW"
+            | "TO_DATE"
+            | "ADD_MONTHS"
+            | "LAST_DAY"
+    )
+}
+
 /// An Oracle/PostgreSQL date mask as a `strftime` format, or `None` when it
 /// uses anything that has no exact equivalent (month names, `FM`, `AM`, ...).
 fn strftime_format(mask: &str) -> Option<String> {
@@ -1675,6 +1770,11 @@ impl Statement {
     /// Emit this statement for a specific engine.
     pub fn to_sql(&self, target: &dyn Dialect) -> Result<String, EmitError> {
         Emitter::for_dialect(target).statement(self)
+    }
+
+    /// Like [`Statement::to_sql`], for a statement parsed as `source`.
+    pub fn to_sql_from(&self, source: &dyn Dialect, target: &dyn Dialect) -> Result<String, EmitError> {
+        Emitter::for_transpile(source, target).statement(self)
     }
 }
 

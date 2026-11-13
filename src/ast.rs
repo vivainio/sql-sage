@@ -44,6 +44,8 @@ pub struct Query {
     pub limit: Option<Expr>,
     pub offset: Option<Expr>,
     pub fetch: Option<Fetch>,
+    /// `FOR UPDATE [OF ...] [NOWAIT | WAIT n | SKIP LOCKED]`, as text after `FOR UPDATE`.
+    pub for_update: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -234,6 +236,12 @@ pub enum Expr {
         expr: Box<Expr>,
         data_type: DataType,
     },
+    /// `expr.member` or `expr.member(args)`: a method call on a value, as in `XMLELEMENT(...).EXTRACT('x')`.
+    Postfix {
+        expr: Box<Expr>,
+        member: Ident,
+        args: Option<Vec<Expr>>,
+    },
     /// `expr AT TIME ZONE zone`
     AtTimeZone {
         expr: Box<Expr>,
@@ -271,6 +279,10 @@ pub struct Function {
     pub name: ObjectName,
     pub distinct: bool,
     pub args: Vec<FunctionArg>,
+    /// `ORDER BY` inside the arguments: `XMLAGG(x ORDER BY y)`.
+    pub order_by: Vec<OrderByExpr>,
+    /// `LISTAGG(...) WITHIN GROUP (ORDER BY ...)`
+    pub within_group: Vec<OrderByExpr>,
     pub over: Option<WindowSpec>,
 }
 
@@ -346,6 +358,13 @@ pub struct DataType {
     pub array_dims: usize,
 }
 
+impl DataType {
+    /// The units of an interval literal (` DAY`, ` YEAR TO MONTH`), or an empty string.
+    pub fn interval_units(&self) -> String {
+        self.suffix.as_ref().map(|u| format!(" {u}")).unwrap_or_default()
+    }
+}
+
 // ------------------------------------------------------------- statements
 
 #[derive(Debug, Clone, PartialEq)]
@@ -353,6 +372,8 @@ pub struct Insert {
     /// SQLite `INSERT OR <action>`
     pub or: Option<String>,
     pub table: ObjectName,
+    /// Oracle `INSERT INTO t alias (...)`
+    pub alias: Option<Ident>,
     pub columns: Vec<Ident>,
     pub source: InsertSource,
     pub on_conflict: Option<OnConflict>,
@@ -568,6 +589,9 @@ pub struct PlTrigger {
     pub table: ObjectName,
     pub for_each_row: bool,
     pub when: Option<Expr>,
+    /// A compound trigger: `FOR ... COMPOUND TRIGGER`, with one block per timing point
+    /// (`BEFORE STATEMENT`, `AFTER EACH ROW`, ...). The unit's own block holds the shared declarations.
+    pub sections: Vec<(String, PlsqlBlock)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

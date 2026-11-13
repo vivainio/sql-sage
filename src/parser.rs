@@ -228,6 +228,11 @@ impl<'a> Parser<'a> {
             if self.dialect.supports_sqlplus_commands() && self.skip_sqlplus_command() {
                 continue;
             }
+            if self.dialect.supports_sqlplus_commands() && *self.peek_token() == Token::Slash {
+                // `END; /` on one line
+                self.index += 1;
+                continue;
+            }
             let start = self.index;
             let at = self.location();
             let result = self.parse_statement().and_then(|s| {
@@ -635,7 +640,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_returning(&mut self) -> Result<Vec<SelectItem>> {
-        if self.dialect.supports_returning() && self.parse_keyword("RETURNING") {
+        if (self.dialect.supports_returning() || self.in_plsql) && self.parse_keyword("RETURNING") {
             self.parse_comma_separated(Self::parse_select_item)
         } else {
             Ok(vec![])
@@ -654,6 +659,16 @@ impl<'a> Parser<'a> {
         };
         self.expect_keyword("INTO")?;
         let table = self.parse_object_name()?;
+        let alias = match self.peek_token() {
+            Token::Word(w)
+                if self.dialect.supports_plsql()
+                    && !self.is_reserved(&w.value)
+                    && !["DEFAULT", "SELECT", "VALUES", "WITH"].iter().any(|k| w.is_keyword(k)) =>
+            {
+                Some(self.parse_ident()?)
+            }
+            _ => None,
+        };
         let mut columns = vec![];
         if *self.peek_token() == Token::LParen
             && !(self.peek_nth_keyword(1, "SELECT") || self.peek_nth_keyword(1, "WITH"))
@@ -688,7 +703,7 @@ impl<'a> Parser<'a> {
             None
         };
         let returning = self.parse_returning()?;
-        Ok(Statement::Insert(Insert { or, table, columns, source, on_conflict, returning }))
+        Ok(Statement::Insert(Insert { or, table, alias, columns, source, on_conflict, returning }))
     }
 
     fn parse_assignment(&mut self) -> Result<Assignment> {
@@ -1533,7 +1548,7 @@ impl<'a> Parser<'a> {
         } else {
             vec![]
         };
-        let (mut limit, mut offset, mut fetch) = (None, None, None);
+        let (mut limit, mut offset, mut fetch, mut for_update) = (None, None, None, None);
         loop {
             if self.dialect.supports_limit() && self.parse_keyword("LIMIT") {
                 if self.parse_keyword("ALL") {
@@ -1546,6 +1561,20 @@ impl<'a> Parser<'a> {
                 } else {
                     limit = Some(first);
                 }
+            } else if self.peek_keyword("FOR") && self.peek_nth_keyword(1, "UPDATE") {
+                self.index += 2;
+                let start = self.index;
+                loop {
+                    if self.parse_keyword("OF") {
+                        self.parse_comma_separated(Self::parse_object_name)?;
+                    } else if self.parse_keyword("NOWAIT") || self.parse_keywords(&["SKIP", "LOCKED"]) {
+                    } else if self.parse_keyword("WAIT") {
+                        self.parse_expr()?;
+                    } else {
+                        break;
+                    }
+                }
+                for_update = Some(self.tokens_text(start, self.index));
             } else if self.parse_keyword("OFFSET") {
                 offset = Some(self.parse_expr()?);
                 self.parse_one_of_keywords(&["ROW", "ROWS"]);
@@ -1572,7 +1601,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(Query { with, body, order_by, limit, offset, fetch })
+        Ok(Query { with, body, order_by, limit, offset, fetch, for_update })
     }
 
     fn parse_cte(&mut self) -> Result<Cte> {
@@ -1945,6 +1974,7 @@ impl<'a> Parser<'a> {
             Token::Arrow | Token::LongArrow if self.dialect.supports_json_arrows() => 30,
             Token::Plus | Token::Minus => 40,
             Token::Slash if self.is_sqlplus_slash(self.index) => 0,
+            Token::Period if matches!(self.peek_nth(1), Token::Word(_)) => 80,
             Token::Star | Token::Slash | Token::Percent => 50,
             Token::DoubleColon if self.dialect.supports_double_colon_cast() => 70,
             _ => 0,
@@ -1979,6 +2009,20 @@ impl<'a> Parser<'a> {
         let left = Box::new(left);
         match tok {
             Token::DoubleColon => Ok(Expr::Cast { expr: left, data_type: self.parse_data_type()? }),
+            Token::Period => {
+                let member = self.parse_ident()?;
+                let args = if self.consume_token(&Token::LParen) {
+                    let mut args = vec![];
+                    if !self.consume_token(&Token::RParen) {
+                        args = self.parse_comma_separated(Self::parse_expr)?;
+                        self.expect_token(&Token::RParen)?;
+                    }
+                    Some(args)
+                } else {
+                    None
+                };
+                Ok(Expr::Postfix { expr: left, member, args })
+            }
             Token::Word(w) => {
                 let upper = w.value.to_ascii_uppercase();
                 if upper == "AT" {
@@ -2108,7 +2152,8 @@ impl<'a> Parser<'a> {
                     if matches!(self.peek_token(), Token::SingleQuotedString(_)) =>
                 {
                     let Token::SingleQuotedString(value) = self.next_token() else { unreachable!() };
-                    let data_type = DataType { name: upper, args: vec![], suffix: None, array_dims: 0 };
+                    let suffix = if upper == "INTERVAL" { self.parse_interval_units() } else { None };
+                    let data_type = DataType { name: upper, args: vec![], suffix, array_dims: 0 };
                     return Ok(Expr::TypedString { data_type, value });
                 }
                 _ => {}
@@ -2153,6 +2198,30 @@ impl<'a> Parser<'a> {
             parts.push(self.parse_ident()?);
         }
         Ok(Expr::CompoundIdentifier(parts))
+    }
+
+    /// `DAY`, `YEAR TO MONTH`, `DAY(2) TO SECOND(6)` after an interval literal.
+    fn parse_interval_units(&mut self) -> Option<String> {
+        const UNITS: [&str; 5] = ["YEAR", "MONTH", "DAY", "HOUR", "MINUTE"];
+        let start = self.index;
+        let is_unit = |p: &Self| matches!(p.peek_token(), Token::Word(w) if UNITS.iter().any(|u| w.is_keyword(u)) || w.is_keyword("SECOND"));
+        if !is_unit(self) {
+            return None;
+        }
+        self.index += 1;
+        if *self.peek_token() == Token::LParen {
+            self.skip_balanced_parens().ok()?;
+        }
+        if self.peek_keyword("TO") {
+            self.index += 1;
+            if is_unit(self) {
+                self.index += 1;
+                if *self.peek_token() == Token::LParen {
+                    self.skip_balanced_parens().ok()?;
+                }
+            }
+        }
+        Some(self.tokens_text(start, self.index))
     }
 
     fn parse_case(&mut self) -> Result<Expr> {
@@ -2203,6 +2272,7 @@ impl<'a> Parser<'a> {
         }
         let distinct = self.parse_keyword("DISTINCT");
         let mut args = vec![];
+        let mut order_by = vec![];
         if !self.consume_token(&Token::RParen) {
             loop {
                 if self.consume_token(&Token::Star) {
@@ -2220,10 +2290,23 @@ impl<'a> Parser<'a> {
                 if self.consume_token(&Token::Comma) {
                     continue;
                 }
+                if self.parse_keywords(&["ORDER", "BY"]) {
+                    order_by = self.parse_comma_separated(Self::parse_order_by_expr)?;
+                }
                 self.expect_token(&Token::RParen)?;
                 break;
             }
         }
+        let within_group = if self.parse_keywords(&["WITHIN", "GROUP"]) {
+            self.expect_token(&Token::LParen)?;
+            self.expect_keyword("ORDER")?;
+            self.expect_keyword("BY")?;
+            let o = self.parse_comma_separated(Self::parse_order_by_expr)?;
+            self.expect_token(&Token::RParen)?;
+            o
+        } else {
+            vec![]
+        };
         let over = if self.parse_keyword("OVER") {
             self.expect_token(&Token::LParen)?;
             let partition_by = if self.parse_keywords(&["PARTITION", "BY"]) {
@@ -2241,6 +2324,6 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        Ok(Expr::Function(Function { name, distinct, args, over }))
+        Ok(Expr::Function(Function { name, distinct, args, order_by, within_group, over }))
     }
 }

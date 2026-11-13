@@ -652,6 +652,12 @@ impl Collector {
             | Expr::IsNull(expr)
             | Expr::IsNotNull(expr)
             | Expr::Cast { expr, .. } => self.expr(expr),
+            Expr::Postfix { expr, args, .. } => {
+                self.expr(expr);
+                for a in args.iter().flatten() {
+                    self.expr(a);
+                }
+            }
             Expr::AtTimeZone { expr, zone } => {
                 self.expr(expr);
                 self.expr(zone);

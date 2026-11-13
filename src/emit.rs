@@ -266,6 +266,9 @@ impl<'a> Emitter<'a> {
             }
         }
         out.push_str(&format!("INTO {}", self.object_name(&i.table)));
+        if let Some(a) = &i.alias {
+            out.push_str(&format!(" {}", self.ident(a)));
+        }
         if !i.columns.is_empty() {
             out.push(' ');
             out.push_str(&self.paren_idents(&i.columns));
@@ -1115,9 +1118,9 @@ impl<'a> Emitter<'a> {
 
     fn typed_string(&self, dt: &DataType, value: &str) -> R {
         if self.has(|d| d.supports_typed_literals()) {
-            return Ok(format!("{} {}", dt.name, quote_str(value)));
+            return Ok(format!("{} {}{}", dt.name, quote_str(value), dt.interval_units()));
         }
-        let lit = format!("{} {}", dt.name, quote_str(value));
+        let lit = format!("{} {}{}", dt.name, quote_str(value), dt.interval_units());
         match dt.name.as_str() {
             "DATE" | "TIME" | "TIMESTAMP" => {
                 self.note(Severity::Rewritten, format!("{} literal -> plain string", dt.name), Some(lit));
@@ -1210,6 +1213,13 @@ impl<'a> Emitter<'a> {
             Expr::Exists { subquery, negated } => format!("{}EXISTS ({})", neg(*negated), self.query(subquery)?),
             Expr::Subquery(q) => format!("({})", self.query(q)?),
             Expr::Cast { expr, data_type } => format!("CAST({} AS {})", self.expr(expr)?, self.data_type(data_type)?),
+            Expr::Postfix { expr, member, args } => {
+                let mut s = format!("{}.{}", self.expr(expr)?, self.ident(member));
+                if let Some(args) = args {
+                    s.push_str(&format!("({})", self.list(args, Self::expr)?));
+                }
+                s
+            }
             Expr::AtTimeZone { expr, zone } => format!("{} AT TIME ZONE {}", self.expr(expr)?, self.expr(zone)?),
             Expr::Case { operand, branches, else_result } => {
                 let mut s = String::from("CASE");
@@ -1367,7 +1377,16 @@ impl<'a> Emitter<'a> {
             FunctionArg::Expr(e) => s.expr(e),
             FunctionArg::Named(n, e) => Ok(format!("{} => {}", s.ident(n), s.expr(e)?)),
         })?;
-        let mut out = format!("{}({}{args})", self.object_name(&f.name), if f.distinct { "DISTINCT " } else { "" });
+        let inner_order = if f.order_by.is_empty() {
+            String::new()
+        } else {
+            format!(" ORDER BY {}", self.list(&f.order_by, Self::order_by_expr)?)
+        };
+        let mut out =
+            format!("{}({}{args}{inner_order})", self.object_name(&f.name), if f.distinct { "DISTINCT " } else { "" });
+        if !f.within_group.is_empty() {
+            out.push_str(&format!(" WITHIN GROUP (ORDER BY {})", self.list(&f.within_group, Self::order_by_expr)?));
+        }
         if let (true, Some(s), Some(t)) = (self.collect, self.source, self.target) {
             self.check_function(s, t, f, &out);
         }

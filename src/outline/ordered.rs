@@ -72,6 +72,9 @@ impl Outline {
             head.push_str(&format!(" or {}", or.to_lowercase()));
         }
         head.push_str(&format!(" into {}", self.name(&i.table)));
+        if let Some(a) = &i.alias {
+            head.push_str(&format!(" {}", self.id(a)));
+        }
         if !i.columns.is_empty() {
             head.push_str(&format!(" ({})", self.ids(&i.columns)));
         }
@@ -596,7 +599,8 @@ impl Outline {
             Expr::Value(v) => self.e.value(v),
             Expr::Placeholder(p) => p.clone(),
             Expr::TypedString { data_type, value } => {
-                format!("{} {}", data_type.name.to_lowercase(), self.e.value(&Value::String(value.clone())))
+                let unit = data_type.suffix.as_ref().map(|u| format!(" {}", u.to_lowercase())).unwrap_or_default();
+                format!("{} {}{unit}", data_type.name.to_lowercase(), self.e.value(&Value::String(value.clone())))
             }
             Expr::BinaryOp { left, op, right } => {
                 let sym = match op {
@@ -689,6 +693,13 @@ impl Outline {
                 format!("{not}exists {}", self.sub(subquery))
             }
             Expr::Subquery(q) => self.sub(q),
+            Expr::Postfix { expr, member, args } => {
+                let mut s = format!("{}.{}", self.expr(expr), self.id(member));
+                if let Some(args) = args {
+                    s.push_str(&format!("({})", self.exprs(args)));
+                }
+                s
+            }
             Expr::AtTimeZone { expr, zone } => format!("{} at time zone {}", self.expr(expr), self.expr(zone)),
             Expr::Cast { expr, data_type } => {
                 let simple = matches!(
@@ -741,7 +752,18 @@ impl Outline {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                let mut s = format!("{}({}{args})", self.name(&f.name), if f.distinct { "distinct " } else { "" });
+                let inner_order = if f.order_by.is_empty() {
+                    String::new()
+                } else {
+                    let o: Vec<_> = f.order_by.iter().map(|o| self.order_by(o)).collect();
+                    format!(" order by {}", o.join(", "))
+                };
+                let mut s =
+                    format!("{}({}{args}{inner_order})", self.name(&f.name), if f.distinct { "distinct " } else { "" });
+                if !f.within_group.is_empty() {
+                    let o: Vec<_> = f.within_group.iter().map(|o| self.order_by(o)).collect();
+                    s.push_str(&format!(" within group (order by {})", o.join(", ")));
+                }
                 if let Some(w) = &f.over {
                     let mut parts = vec![];
                     if !w.partition_by.is_empty() {

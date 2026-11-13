@@ -99,38 +99,24 @@ impl<'a> Parser<'a> {
 
     fn parse_trigger(&mut self) -> Result<PlsqlUnit> {
         let name = self.parse_object_name()?;
-        let timing = if self.parse_keyword("BEFORE") {
+        let compound = self.parse_keyword("FOR");
+        let timing = if compound {
+            "COMPOUND"
+        } else if self.parse_keyword("BEFORE") {
             "BEFORE"
         } else if self.parse_keyword("AFTER") {
             "AFTER"
         } else if self.parse_keywords(&["INSTEAD", "OF"]) {
             "INSTEAD OF"
         } else {
-            return self.expected("BEFORE, AFTER or INSTEAD OF");
+            return self.expected("BEFORE, AFTER, INSTEAD OF or FOR");
         };
-        let mut events = vec![];
-        loop {
-            if self.parse_keyword("INSERT") {
-                events.push("INSERT".to_string());
-            } else if self.parse_keyword("DELETE") {
-                events.push("DELETE".to_string());
-            } else if self.parse_keyword("UPDATE") {
-                if self.parse_keyword("OF") {
-                    let cols = self.parse_comma_separated(Self::parse_ident)?;
-                    let cols: Vec<_> = cols.iter().map(|c| c.value.clone()).collect();
-                    events.push(format!("UPDATE OF {}", cols.join(", ")));
-                } else {
-                    events.push("UPDATE".to_string());
-                }
-            } else {
-                return self.expected("INSERT, UPDATE or DELETE");
-            }
-            if !self.parse_keyword("OR") {
-                break;
-            }
-        }
+        let events = self.parse_trigger_events()?;
         self.expect_keyword("ON")?;
         let table = self.parse_object_name()?;
+        if compound {
+            return self.parse_compound_trigger(name, events, table);
+        }
         if self.parse_keyword("REFERENCING") {
             while !["FOR", "WHEN", "DECLARE", "BEGIN", "ENABLE", "DISABLE"].iter().any(|k| self.peek_keyword(k)) {
                 if *self.peek_token() == Token::Eof {
@@ -154,7 +140,7 @@ impl<'a> Parser<'a> {
         };
         self.parse_keyword("DECLARE");
         let block = self.parse_plsql_body()?;
-        let trigger = PlTrigger { timing: timing.to_string(), events, table, for_each_row, when };
+        let trigger = PlTrigger { timing: timing.to_string(), events, table, for_each_row, when, sections: vec![] };
         Ok(PlsqlUnit {
             kind: PlsqlKind::Trigger,
             name: Some(name),
@@ -166,16 +152,97 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `[declarations] BEGIN statements [EXCEPTION handlers] END [name]`
-    fn parse_plsql_body(&mut self) -> Result<PlsqlBlock> {
+    /// `INSERT OR UPDATE OF a, b OR DELETE`
+    fn parse_trigger_events(&mut self) -> Result<Vec<String>> {
+        let mut events = vec![];
+        loop {
+            if self.parse_keyword("INSERT") {
+                events.push("INSERT".to_string());
+            } else if self.parse_keyword("DELETE") {
+                events.push("DELETE".to_string());
+            } else if self.parse_keyword("UPDATE") {
+                if self.parse_keyword("OF") {
+                    let cols = self.parse_comma_separated(Self::parse_ident)?;
+                    let cols: Vec<_> = cols.iter().map(|c| c.value.clone()).collect();
+                    events.push(format!("UPDATE OF {}", cols.join(", ")));
+                } else {
+                    events.push("UPDATE".to_string());
+                }
+            } else {
+                return self.expected("INSERT, UPDATE or DELETE");
+            }
+            if !self.parse_keyword("OR") {
+                return Ok(events);
+            }
+        }
+    }
+
+    /// `BEFORE STATEMENT`, `AFTER EACH ROW`, `INSTEAD OF EACH ROW`
+    fn parse_timing_point(&mut self) -> Result<String> {
+        let when = if self.parse_keyword("BEFORE") {
+            "BEFORE"
+        } else if self.parse_keyword("AFTER") {
+            "AFTER"
+        } else if self.parse_keywords(&["INSTEAD", "OF"]) {
+            "INSTEAD OF"
+        } else {
+            return self.expected("BEFORE, AFTER or INSTEAD OF");
+        };
+        if self.parse_keyword("STATEMENT") {
+            Ok(format!("{when} STATEMENT"))
+        } else if self.parse_keywords(&["EACH", "ROW"]) {
+            Ok(format!("{when} EACH ROW"))
+        } else {
+            self.expected("STATEMENT or EACH ROW")
+        }
+    }
+
+    /// After `FOR events ON table`: `COMPOUND TRIGGER declarations sections END [name]`.
+    fn parse_compound_trigger(
+        &mut self,
+        name: ObjectName,
+        events: Vec<String>,
+        table: ObjectName,
+    ) -> Result<PlsqlUnit> {
+        self.expect_keyword("COMPOUND")?;
+        self.expect_keyword("TRIGGER")?;
         let mut block = PlsqlBlock::default();
-        while !self.peek_keyword("BEGIN") {
+        let at_timing_point =
+            |p: &Self| p.peek_keyword("BEFORE") || p.peek_keyword("AFTER") || p.peek_keyword("INSTEAD");
+        while !at_timing_point(self) {
             if *self.peek_token() == Token::Eof {
-                return self.expected("BEGIN");
+                return self.expected("a timing point");
             }
             block.declarations.push(self.parse_pl_declaration()?);
         }
-        self.expect_keyword("BEGIN")?;
+        let mut sections = vec![];
+        while at_timing_point(self) {
+            let point = self.parse_timing_point()?;
+            self.expect_keyword("IS")?;
+            self.expect_keyword("BEGIN")?;
+            let mut section = PlsqlBlock::default();
+            self.parse_pl_body_tail(&mut section)?;
+            self.expect_keyword("END")?;
+            self.parse_timing_point()?;
+            self.expect_token(&Token::Semicolon)?;
+            sections.push((point, section));
+        }
+        self.expect_keyword("END")?;
+        self.skip_pl_label_name();
+        let trigger = PlTrigger { timing: "COMPOUND".into(), events, table, for_each_row: false, when: None, sections };
+        Ok(PlsqlUnit {
+            kind: PlsqlKind::Trigger,
+            name: Some(name),
+            params: vec![],
+            returns: None,
+            trigger: Some(trigger),
+            block,
+            text: String::new(),
+        })
+    }
+
+    /// Statements and exception handlers, up to `END`.
+    fn parse_pl_body_tail(&mut self, block: &mut PlsqlBlock) -> Result<()> {
         block.body = self.parse_pl_statements()?;
         if self.parse_keyword("EXCEPTION") {
             while self.parse_keyword("WHEN") {
@@ -188,6 +255,20 @@ impl<'a> Parser<'a> {
                 block.handlers.push(PlHandler { exceptions, body });
             }
         }
+        Ok(())
+    }
+
+    /// `[declarations] BEGIN statements [EXCEPTION handlers] END [name]`
+    fn parse_plsql_body(&mut self) -> Result<PlsqlBlock> {
+        let mut block = PlsqlBlock::default();
+        while !self.peek_keyword("BEGIN") {
+            if *self.peek_token() == Token::Eof {
+                return self.expected("BEGIN");
+            }
+            block.declarations.push(self.parse_pl_declaration()?);
+        }
+        self.expect_keyword("BEGIN")?;
+        self.parse_pl_body_tail(&mut block)?;
         self.expect_keyword("END")?;
         self.skip_pl_label_name();
         Ok(block)
@@ -323,6 +404,9 @@ impl<'a> Parser<'a> {
         let constant = self.parse_keyword("CONSTANT");
         let data_type = self.parse_pl_type()?;
         let not_null = self.parse_keywords(&["NOT", "NULL"]);
+        if !not_null {
+            self.parse_keyword("NULL");
+        }
         let default = self.parse_pl_default()?;
         self.expect_token(&Token::Semicolon)?;
         Ok(PlDeclaration::Variable { name, constant, data_type, not_null, default })

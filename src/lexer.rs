@@ -378,7 +378,11 @@ impl<'a> Lexer<'a> {
                 let value = self.read_delimited(end, doubled, "unterminated quoted identifier")?;
                 Token::Word(Word { value, quote: Some(c) })
             }
-            c if c.is_ascii_digit() || (c == '.' && self.peek_at(1).is_some_and(|d| d.is_ascii_digit())) => {
+            c if c.is_ascii_digit()
+                || (c == '.'
+                    && self.peek_at(1).is_some_and(|d| d.is_ascii_digit())
+                    && !(self.pos > 0 && self.chars[self.pos - 1] == '.')) =>
+            {
                 Token::Number(self.read_number())
             }
             c if self.dialect.is_identifier_start(c) => {
@@ -411,6 +415,24 @@ impl<'a> Lexer<'a> {
                 }
             }
             '?' if self.dialect.supports_question_placeholders() => self.read_placeholder('?'),
+            '&' if self.dialect.supports_sqlplus_commands()
+                && (next_is_word || (self.peek_at(1) == Some('&') && self.peek_at(2).is_some_and(is_word_char))) =>
+            {
+                let mut s = String::from("&");
+                self.bump();
+                if self.peek() == Some('&') {
+                    s.push('&');
+                    self.bump();
+                }
+                while let Some(c) = self.peek().filter(|c| is_word_char(*c)) {
+                    s.push(c);
+                    self.bump();
+                }
+                if self.peek() == Some('.') {
+                    self.bump();
+                }
+                Token::Word(Word { value: s, quote: None })
+            }
             ':' => {
                 if self.peek_at(1) == Some(':') {
                     self.bump();

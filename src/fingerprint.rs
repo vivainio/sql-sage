@@ -32,6 +32,7 @@ pub enum StatementKind {
     AlterTable,
     Truncate,
     Merge,
+    Plsql,
     Other,
     DropTable,
     DropView,
@@ -53,6 +54,7 @@ impl fmt::Display for StatementKind {
             StatementKind::AlterTable => "alter_table",
             StatementKind::Truncate => "truncate",
             StatementKind::Merge => "merge",
+            StatementKind::Plsql => "plsql",
             StatementKind::Other => "other",
             StatementKind::DropTable => "drop_table",
             StatementKind::DropView => "drop_view",
@@ -480,6 +482,7 @@ impl Collector {
                 }
                 StatementKind::Truncate
             }
+            Statement::Plsql(_) => StatementKind::Plsql,
             Statement::Other(_) => StatementKind::Other,
             Statement::Drop(d) => {
                 for n in &d.names {
@@ -701,7 +704,7 @@ impl Collector {
             Expr::Function(f) => {
                 self.functions.insert(f.name.0.iter().map(|i| i.value.to_lowercase()).collect::<Vec<_>>().join("."));
                 for a in &f.args {
-                    if let FunctionArg::Expr(e) = a {
+                    if let FunctionArg::Expr(e) | FunctionArg::Named(_, e) = a {
                         self.expr(e);
                     }
                 }

@@ -167,16 +167,11 @@ impl Schema {
             applied.skipped.push(SchemaError { message: e.to_string(), location: Some(at) });
         }
         for s in parsed.statements {
-            if let Statement::Other(o) = &s.statement {
-                let unit = ["FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE", "TYPE"]
-                    .iter()
-                    .any(|k| o.kind == format!("CREATE {k}"));
-                if unit || o.kind == "PL/SQL BLOCK" {
-                    applied.plsql.push(SchemaError {
-                        message: format!("{} not analyzed", o.kind),
-                        location: Some(s.location.clone()),
-                    });
-                }
+            if let Statement::Plsql(u) = &s.statement {
+                applied.plsql.push(SchemaError {
+                    message: format!("{} not analyzed", u.kind.label()),
+                    location: Some(s.location.clone()),
+                });
             }
             if let Err(mut e) = self.apply(&s.statement) {
                 e.location = Some(s.location);
@@ -205,6 +200,7 @@ impl Schema {
             | Statement::Delete(_)
             | Statement::Merge(_)
             | Statement::InsertAll(_)
+            | Statement::Plsql(_)
             | Statement::Truncate(_)
             | Statement::Other(_) => Ok(()),
         }

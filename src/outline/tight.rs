@@ -65,6 +65,7 @@ impl Outline {
             | Statement::Merge(_)
             | Statement::InsertAll(_)
             | Statement::Other(_)
+            | Statement::Plsql(_)
             | Statement::Drop(_) => self.statement(s),
         }
     }

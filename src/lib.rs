@@ -67,6 +67,12 @@ pub fn transpile(from: DialectKind, to: DialectKind, sql: &str) -> Result<String
     let target = to.dialect();
     let mut out = Vec::new();
     for s in &stmts {
+        if let Statement::Plsql(u) = s {
+            if from != to {
+                let message = format!("{} cannot be translated", u.kind.label());
+                return Err(TranspileError::Emit(EmitError { message }));
+            }
+        }
         if let Statement::Other(o) = s {
             if from != to {
                 let message = format!("{} statements cannot be translated", o.kind);

@@ -61,6 +61,10 @@ pub trait Dialect: Debug {
     fn supports_physical_clauses(&self) -> bool {
         false
     }
+    /// PL/SQL blocks, functions, procedures and triggers.
+    fn supports_plsql(&self) -> bool {
+        false
+    }
     /// `START WITH ... CONNECT BY ...`, `PRIOR`.
     fn supports_connect_by(&self) -> bool {
         false
@@ -496,6 +500,9 @@ impl Dialect for OracleDialect {
         true
     }
     fn supports_connect_by(&self) -> bool {
+        true
+    }
+    fn supports_plsql(&self) -> bool {
         true
     }
     fn supports_colon_placeholders(&self) -> bool {

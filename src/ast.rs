@@ -30,6 +30,8 @@ pub enum Statement {
     /// A statement that is accepted but not modeled (`COMMIT`, `GRANT`, `ALTER VIEW ... COMPILE`,
     /// a PL/SQL block, ...). Its text is kept as written.
     Other(Other),
+    /// A PL/SQL block, function, procedure or trigger.
+    Plsql(Box<PlsqlUnit>),
 }
 
 // ---------------------------------------------------------------- queries
@@ -274,6 +276,8 @@ pub struct Function {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FunctionArg {
+    /// `name => value`
+    Named(Ident, Expr),
     Wildcard,
     Expr(Expr),
 }
@@ -521,6 +525,195 @@ pub enum MergeAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Truncate {
     pub tables: Vec<ObjectName>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlsqlUnit {
+    pub kind: PlsqlKind,
+    pub name: Option<ObjectName>,
+    pub params: Vec<PlParam>,
+    /// The `RETURN` type of a function.
+    pub returns: Option<String>,
+    pub trigger: Option<PlTrigger>,
+    pub block: PlsqlBlock,
+    /// The unit as source text (spacing normalized).
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlsqlKind {
+    Block,
+    Function,
+    Procedure,
+    Trigger,
+}
+
+impl PlsqlKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            PlsqlKind::Block => "PL/SQL BLOCK",
+            PlsqlKind::Function => "CREATE FUNCTION",
+            PlsqlKind::Procedure => "CREATE PROCEDURE",
+            PlsqlKind::Trigger => "CREATE TRIGGER",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlTrigger {
+    /// `BEFORE`, `AFTER` or `INSTEAD OF`.
+    pub timing: String,
+    /// `INSERT`, `DELETE`, `UPDATE`, `UPDATE OF a, b`.
+    pub events: Vec<String>,
+    pub table: ObjectName,
+    pub for_each_row: bool,
+    pub when: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlParam {
+    pub name: Ident,
+    /// `IN`, `OUT`, `IN OUT`.
+    pub mode: Option<String>,
+    /// The type as written: `NUMBER`, `VARCHAR2(10)`, `t.c%TYPE`.
+    pub data_type: String,
+    pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlsqlBlock {
+    pub label: Option<Ident>,
+    pub declarations: Vec<PlDeclaration>,
+    pub body: Vec<PlStatement>,
+    pub handlers: Vec<PlHandler>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlHandler {
+    /// Exception names; `OTHERS` is one of them.
+    pub exceptions: Vec<ObjectName>,
+    pub body: Vec<PlStatement>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlDeclaration {
+    Variable {
+        name: Ident,
+        constant: bool,
+        data_type: String,
+        not_null: bool,
+        default: Option<Expr>,
+    },
+    Cursor {
+        name: Ident,
+        params: Vec<PlParam>,
+        query: Box<Query>,
+    },
+    Exception(Ident),
+    Pragma(String),
+    /// `TYPE name IS ...`, kept as text.
+    Type {
+        name: Ident,
+        definition: String,
+    },
+    Subprogram(Box<PlSubprogram>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlSubprogram {
+    pub is_function: bool,
+    pub name: Ident,
+    pub params: Vec<PlParam>,
+    pub returns: Option<String>,
+    /// `None` for a forward declaration.
+    pub block: Option<PlsqlBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlStatement {
+    Null,
+    Assign {
+        target: Expr,
+        value: Expr,
+    },
+    If {
+        branches: Vec<(Expr, Vec<PlStatement>)>,
+        else_body: Vec<PlStatement>,
+    },
+    Case {
+        operand: Option<Expr>,
+        whens: Vec<(Expr, Vec<PlStatement>)>,
+        else_body: Option<Vec<PlStatement>>,
+    },
+    Loop {
+        label: Option<Ident>,
+        body: Vec<PlStatement>,
+    },
+    While {
+        label: Option<Ident>,
+        condition: Expr,
+        body: Vec<PlStatement>,
+    },
+    ForRange {
+        label: Option<Ident>,
+        var: Ident,
+        reverse: bool,
+        low: Expr,
+        high: Expr,
+        body: Vec<PlStatement>,
+    },
+    ForIn {
+        label: Option<Ident>,
+        var: Ident,
+        source: PlCursorSource,
+        body: Vec<PlStatement>,
+    },
+    Forall {
+        var: Ident,
+        low: Expr,
+        high: Expr,
+        statement: Box<PlStatement>,
+    },
+    Return(Option<Expr>),
+    Exit {
+        label: Option<Ident>,
+        when: Option<Expr>,
+    },
+    Continue {
+        label: Option<Ident>,
+        when: Option<Expr>,
+    },
+    Goto(Ident),
+    Raise(Option<ObjectName>),
+    /// Embedded SQL; `into` are the `INTO` / `BULK COLLECT INTO` variables.
+    Sql {
+        statement: Box<Statement>,
+        into: Vec<Expr>,
+    },
+    ExecuteImmediate {
+        sql: Expr,
+        into: Vec<Expr>,
+        using: Vec<Expr>,
+    },
+    Open {
+        cursor: Expr,
+        query: Option<Box<Query>>,
+    },
+    Fetch {
+        cursor: Expr,
+        into: Vec<Expr>,
+    },
+    Close(Expr),
+    /// A procedure call, or any other expression statement.
+    Call(Expr),
+    Block(Box<PlsqlBlock>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlCursorSource {
+    Query(Box<Query>),
+    /// A declared cursor, with its arguments.
+    Cursor(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -69,16 +69,22 @@ pub struct LenientStatement {
     pub dynamic: bool,
 }
 
+mod plsql;
+
 pub struct Parser<'a> {
     dialect: &'a dyn Dialect,
     tokens: Vec<TokenWithLocation>,
     index: usize,
+    /// Inside PL/SQL: `SELECT ... INTO`, `%ROWCOUNT`, `:NEW.col` are understood.
+    in_plsql: bool,
+    /// The `INTO` targets of the `SELECT` just parsed (PL/SQL only).
+    pending_into: Vec<Expr>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(dialect: &'a dyn Dialect, sql: &str) -> Result<Self> {
         let tokens = Lexer::new(dialect, sql).tokenize()?;
-        Ok(Self { dialect, tokens, index: 0 })
+        Ok(Self { dialect, tokens, index: 0, in_plsql: false, pending_into: vec![] })
     }
 
     // ------------------------------------------------------------ plumbing
@@ -232,24 +238,17 @@ impl<'a> Parser<'a> {
                 }
             });
             match result {
-                Ok(statement) => out.statements.push(LenientStatement { statement, location: at, dynamic: false }),
-                Err(e) => {
-                    self.index = start;
-                    match self.plsql_kind() {
-                        Some(kind) => {
-                            self.recover();
-                            let text = self.tokens_text(start, self.index);
-                            let statement = Statement::Other(Other { kind: kind.clone(), text });
-                            out.statements.push(LenientStatement { statement, location: at, dynamic: false });
-                            if kind == "PL/SQL BLOCK" {
-                                self.extract_dynamic_sql(start, self.index, &mut out);
-                            }
-                        }
-                        None => {
-                            out.skipped.push((at, e));
-                            self.recover();
-                        }
+                Ok(statement) => {
+                    let block = matches!(&statement, Statement::Plsql(u) if u.kind == PlsqlKind::Block);
+                    out.statements.push(LenientStatement { statement, location: at, dynamic: false });
+                    if block {
+                        self.extract_dynamic_sql(start, self.index, &mut out);
                     }
+                }
+                Err(e) => {
+                    out.skipped.push((at, e));
+                    self.index = start;
+                    self.recover();
                 }
             }
         }
@@ -389,7 +388,9 @@ impl<'a> Parser<'a> {
         if self.peek_query_start() || *self.peek_token() == Token::LParen {
             return Ok(Statement::Query(Box::new(self.parse_query()?)));
         }
-        if self.peek_keyword("INSERT")
+        if self.dialect.supports_plsql() && self.is_plsql_start() {
+            self.parse_plsql_unit()
+        } else if self.peek_keyword("INSERT")
             && (self.peek_nth_keyword(1, "ALL")
                 || self.peek_nth_keyword(1, "FIRST")
                 || self.peek_nth_keyword(1, "WHEN"))
@@ -1650,6 +1651,14 @@ impl<'a> Parser<'a> {
             None
         };
         let projection = self.parse_comma_separated(Self::parse_select_item)?;
+        if self.in_plsql {
+            let bulk = self.parse_keywords(&["BULK", "COLLECT"]);
+            if self.parse_keyword("INTO") {
+                self.pending_into = self.parse_comma_separated(Self::parse_expr)?;
+            } else if bulk {
+                return self.expected("INTO");
+            }
+        }
         let from =
             if self.parse_keyword("FROM") { self.parse_comma_separated(Self::parse_table_and_joins)? } else { vec![] };
         let selection = if self.parse_keyword("WHERE") { Some(self.parse_expr()?) } else { None };
@@ -2032,7 +2041,7 @@ impl<'a> Parser<'a> {
         match self.next_token() {
             Token::Number(n) => Ok(Expr::Value(Value::Number(n))),
             Token::SingleQuotedString(s) => Ok(Expr::Value(Value::String(s))),
-            Token::Placeholder(p) => Ok(Expr::Placeholder(p)),
+            Token::Placeholder(p) => self.parse_placeholder_or_trigger_ref(p),
             Token::Plus => Ok(Expr::UnaryOp { op: UnaryOperator::Plus, expr: Box::new(self.parse_subexpr(60)?) }),
             Token::Minus => Ok(Expr::UnaryOp { op: UnaryOperator::Minus, expr: Box::new(self.parse_subexpr(60)?) }),
             Token::LParen => {
@@ -2110,13 +2119,40 @@ impl<'a> Parser<'a> {
             }
         }
         let mut parts = vec![Ident { value: w.value, quote_style: w.quote }];
-        while self.consume_token(&Token::Period) {
+        // `a..b` is a range, not a qualified name.
+        while *self.peek_token() == Token::Period && *self.peek_nth(1) != Token::Period {
+            self.index += 1;
             parts.push(self.parse_ident()?);
+        }
+        if self.in_plsql && *self.peek_token() == Token::Percent {
+            // Cursor attributes: SQL%ROWCOUNT, cur%NOTFOUND, ...
+            if let Token::Word(a) = self.peek_nth(1).clone() {
+                const ATTRS: [&str; 5] = ["FOUND", "NOTFOUND", "ROWCOUNT", "ISOPEN", "BULK_ROWCOUNT"];
+                if ATTRS.iter().any(|k| a.is_keyword(k)) {
+                    self.index += 2;
+                    let last = parts.last_mut().expect("at least one part");
+                    last.value.push('%');
+                    last.value.push_str(&a.value.to_ascii_uppercase());
+                }
+            }
         }
         if *self.peek_token() == Token::LParen {
             return self.parse_function(ObjectName(parts));
         }
         Ok(if parts.len() == 1 { Expr::Identifier(parts.pop().unwrap()) } else { Expr::CompoundIdentifier(parts) })
+    }
+
+    /// `:NEW.col` / `:OLD.col` in a trigger body; any other placeholder as is.
+    fn parse_placeholder_or_trigger_ref(&mut self, p: String) -> Result<Expr> {
+        let trigger_row = ["NEW", "OLD", "PARENT"].iter().any(|k| p.trim_start_matches(':').eq_ignore_ascii_case(k));
+        if !(self.in_plsql && trigger_row && *self.peek_token() == Token::Period) {
+            return Ok(Expr::Placeholder(p));
+        }
+        let mut parts = vec![Ident { value: p, quote_style: None }];
+        while self.consume_token(&Token::Period) {
+            parts.push(self.parse_ident()?);
+        }
+        Ok(Expr::CompoundIdentifier(parts))
     }
 
     fn parse_case(&mut self) -> Result<Expr> {
@@ -2171,6 +2207,13 @@ impl<'a> Parser<'a> {
             loop {
                 if self.consume_token(&Token::Star) {
                     args.push(FunctionArg::Wildcard);
+                } else if matches!(self.peek_token(), Token::Word(_))
+                    && *self.peek_nth(1) == Token::Eq
+                    && *self.peek_nth(2) == Token::Gt
+                {
+                    let name = self.parse_ident()?;
+                    self.index += 2;
+                    args.push(FunctionArg::Named(name, self.parse_expr()?));
                 } else {
                     args.push(FunctionArg::Expr(self.parse_expr()?));
                 }

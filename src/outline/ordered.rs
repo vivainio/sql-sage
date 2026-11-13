@@ -39,6 +39,7 @@ impl Outline {
                 format!("truncate {}", t.tables.iter().map(|n| self.name(n)).collect::<Vec<_>>().join(", "))
             }
             Statement::Other(o) => o.text.clone(),
+            Statement::Plsql(u) => u.text.clone(),
             Statement::Drop(d) => self.drop_stmt(d),
         }
     }
@@ -736,6 +737,7 @@ impl Outline {
                     .map(|a| match a {
                         FunctionArg::Wildcard => "*".to_string(),
                         FunctionArg::Expr(e) => self.expr(e),
+                        FunctionArg::Named(n, e) => format!("{} => {}", self.id(n), self.expr(e)),
                     })
                     .collect::<Vec<_>>()
                     .join(", ");

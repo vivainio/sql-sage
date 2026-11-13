@@ -231,6 +231,7 @@ impl<'a> Emitter<'a> {
                 "TRUNCATE TABLE {}",
                 t.tables.iter().map(|n| self.object_name(n)).collect::<Vec<_>>().join(", ")
             )),
+            Statement::Plsql(u) => Ok(u.text.clone()),
             Statement::Other(o) => {
                 if let (Some(s), Some(t)) = (self.source, self.target) {
                     if s.name() != t.name() {
@@ -1364,6 +1365,7 @@ impl<'a> Emitter<'a> {
         let args = self.list(&f.args, |s, a| match a {
             FunctionArg::Wildcard => Ok("*".to_string()),
             FunctionArg::Expr(e) => s.expr(e),
+            FunctionArg::Named(n, e) => Ok(format!("{} => {}", s.ident(n), s.expr(e)?)),
         })?;
         let mut out = format!("{}({}{args})", self.object_name(&f.name), if f.distinct { "DISTINCT " } else { "" });
         if let (true, Some(s), Some(t)) = (self.collect, self.source, self.target) {

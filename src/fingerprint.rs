@@ -372,6 +372,9 @@ impl Collector {
             }
             Statement::CreateTable(c) => {
                 self.table(&c.name, Access::Create);
+                if let Some(q) = &c.as_query {
+                    self.query(q);
+                }
                 let refs = c
                     .columns
                     .iter()

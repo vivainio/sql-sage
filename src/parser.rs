@@ -729,6 +729,9 @@ impl<'a> Parser<'a> {
     fn parse_create_table(&mut self, temporary: bool) -> Result<Statement> {
         let if_not_exists = self.parse_keywords(&["IF", "NOT", "EXISTS"]);
         let name = self.parse_object_name()?;
+        if let Some(ctas) = self.parse_create_table_as(temporary, if_not_exists, &name)? {
+            return Ok(ctas);
+        }
         self.expect_token(&Token::LParen)?;
         let mut columns = vec![];
         let mut constraints = vec![];
@@ -746,7 +749,7 @@ impl<'a> Parser<'a> {
         }
         self.expect_token(&Token::RParen)?;
         self.skip_physical_clauses()?;
-        Ok(Statement::CreateTable(CreateTable { temporary, if_not_exists, name, columns, constraints }))
+        Ok(Statement::CreateTable(CreateTable { temporary, if_not_exists, name, columns, constraints, as_query: None }))
     }
 
     fn parse_generated_expr(&mut self) -> Result<ColumnOption> {
@@ -905,6 +908,55 @@ impl<'a> Parser<'a> {
                 return Ok(());
             }
         }
+    }
+
+    /// `CREATE TABLE name [(col, ...)] [physical clauses] AS query`. Returns `None`, with the
+    /// position restored, when what follows the name is an ordinary column list.
+    fn parse_create_table_as(
+        &mut self,
+        temporary: bool,
+        if_not_exists: bool,
+        name: &ObjectName,
+    ) -> Result<Option<Statement>> {
+        let save = self.index;
+        let mut columns = vec![];
+        if self.consume_token(&Token::LParen) {
+            loop {
+                match self.parse_ident() {
+                    Ok(name) => columns.push(ColumnDef { name, data_type: None, options: vec![] }),
+                    Err(_) => {
+                        self.index = save;
+                        return Ok(None);
+                    }
+                }
+                if !self.consume_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.consume_token(&Token::RParen) {
+                self.index = save;
+                return Ok(None);
+            }
+        }
+        self.skip_physical_clauses()?;
+        if !self.parse_keyword("AS") {
+            self.index = save;
+            return Ok(None);
+        }
+        let query = Box::new(self.parse_query()?);
+        // PostgreSQL: WITH [NO] DATA
+        if self.peek_keyword("WITH") && (self.peek_nth_keyword(1, "DATA") || self.peek_nth_keyword(1, "NO")) {
+            self.index += 2;
+            self.parse_keyword("DATA");
+        }
+        Ok(Some(Statement::CreateTable(CreateTable {
+            temporary,
+            if_not_exists,
+            name: name.clone(),
+            columns,
+            constraints: vec![],
+            as_query: Some(query),
+        })))
     }
 
     fn parse_paren_idents(&mut self) -> Result<Vec<Ident>> {

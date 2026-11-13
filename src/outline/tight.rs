@@ -96,6 +96,9 @@ impl Outline {
     }
 
     fn tight_create_table(&self, c: &CreateTable) -> String {
+        if c.as_query.is_some() {
+            return self.statement(&Statement::CreateTable(c.clone()));
+        }
         let head = format!(
             "table {}{}{} {{",
             if c.temporary { "temp " } else { "" },

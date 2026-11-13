@@ -200,8 +200,14 @@ reported on stderr and skipped, and the exit code is 1. Dropping a column also d
 constraints and indexes that use it; renaming a table or column updates references to it.
 `DROP CONSTRAINT` also understands PostgreSQL's generated names (`t_pkey`, `t_col_key`,
 `t_col_fkey`). Names match on their last part (`public.t` is `t`). Queries and DML are ignored;
-materialized views, `CREATE TABLE ... AS SELECT`, partitioning and procedural code are not
-modeled. Dropping a view that is not tracked is not an error. From Rust: `sql_sage::schema::Schema`.
+materialized views, partitioning and procedural code are not modeled. Dropping a view that is
+not tracked is not an error. From Rust: `sql_sage::schema::Schema`.
+
+`CREATE TABLE ... AS SELECT` becomes an ordinary table. Its columns are the select list (names
+from aliases, the column list, or the columns themselves; `*` and `t.*` are expanded from known
+tables). Types are copied from source columns and `CAST`s; for anything else (functions,
+arithmetic, unknown tables) the type is printed as `UNKNOWN`, since there is no type inference.
+`NOT NULL` and other constraints are not carried over.
 
 ## Function catalogs
 

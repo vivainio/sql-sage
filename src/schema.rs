@@ -93,6 +93,15 @@ fn constraint_columns(k: &mut TableConstraintKind) -> Option<&mut Vec<Ident>> {
     }
 }
 
+fn leftmost_select(e: &SetExpr) -> Option<&Select> {
+    match e {
+        SetExpr::Select(s) => Some(s),
+        SetExpr::Query(q) => leftmost_select(&q.body),
+        SetExpr::SetOperation { left, .. } => leftmost_select(left),
+        SetExpr::Values(_) => None,
+    }
+}
+
 fn index_uses(fold: IdentifierFold, i: &CreateIndex, col: &str) -> bool {
     i.columns.iter().any(|c| matches!(&c.expr, Expr::Identifier(id) if key(fold, id) == col))
 }
@@ -187,6 +196,14 @@ impl Schema {
         if self.find_table(&c.name).is_some() {
             return if c.if_not_exists { Ok(()) } else { err(format!("table {} already exists", last(&c.name).value)) };
         }
+        if let Some(q) = &c.as_query {
+            let mut t = c.clone();
+            t.if_not_exists = false;
+            t.as_query = None;
+            t.columns = self.derive_columns(q, &c.columns);
+            self.tables.push(t);
+            return Ok(());
+        }
         let mut seen = std::collections::HashSet::new();
         for col in &c.columns {
             if !seen.insert(self.k(&col.name)) {
@@ -197,6 +214,100 @@ impl Schema {
         t.if_not_exists = false;
         self.tables.push(t);
         Ok(())
+    }
+
+    /// The columns `CREATE TABLE ... AS query` would produce. Names come from the column list,
+    /// the select list aliases, or the column itself; types are copied from known source
+    /// columns and `CAST`s, and are `UNKNOWN` for anything else (no type inference).
+    fn derive_columns(&self, q: &Query, names: &[ColumnDef]) -> Vec<ColumnDef> {
+        let unknown = || DataType { name: "UNKNOWN".into(), args: vec![], suffix: None, array_dims: 0 };
+        let plain = |name: &Ident, ty: Option<DataType>| ColumnDef {
+            name: name.clone(),
+            data_type: Some(ty.unwrap_or_else(unknown)),
+            options: vec![],
+        };
+        let mut out: Vec<ColumnDef> = vec![];
+        if let Some(select) = leftmost_select(&q.body) {
+            let mut sources: Vec<(String, Option<usize>)> = vec![];
+            for t in &select.from {
+                self.collect_sources(t, &mut sources);
+            }
+            for item in &select.projection {
+                match item {
+                    SelectItem::Wildcard | SelectItem::QualifiedWildcard(_) => {
+                        let only = match item {
+                            SelectItem::QualifiedWildcard(n) => Some(self.k(last(n))),
+                            _ => None,
+                        };
+                        for (qual, ti) in &sources {
+                            if only.as_ref().is_some_and(|o| o != qual) {
+                                continue;
+                            }
+                            if let Some(ti) = ti {
+                                for col in &self.tables[*ti].columns {
+                                    out.push(plain(&col.name, col.data_type.clone()));
+                                }
+                            }
+                        }
+                    }
+                    SelectItem::ExprWithAlias { expr, alias } => out.push(plain(alias, self.expr_type(expr, &sources))),
+                    SelectItem::UnnamedExpr(expr) => {
+                        let name = match expr {
+                            Expr::Identifier(id) => id.clone(),
+                            Expr::CompoundIdentifier(parts) if !parts.is_empty() => parts.last().unwrap().clone(),
+                            _ => Ident { value: "?column?".into(), quote_style: None },
+                        };
+                        out.push(plain(&name, self.expr_type(expr, &sources)));
+                    }
+                }
+            }
+        }
+        for (col, given) in out.iter_mut().zip(names) {
+            col.name = given.name.clone();
+        }
+        for given in names.iter().skip(out.len()) {
+            out.push(plain(&given.name, None));
+        }
+        out
+    }
+
+    fn collect_sources(&self, t: &TableWithJoins, out: &mut Vec<(String, Option<usize>)>) {
+        let mut factors = vec![&t.relation];
+        factors.extend(t.joins.iter().map(|j| &j.relation));
+        for f in factors {
+            match f {
+                TableFactor::Table { name, alias } => {
+                    let qual = alias.as_ref().map_or_else(|| self.k(last(name)), |a| self.k(&a.name));
+                    out.push((qual, self.find_table(name)));
+                }
+                TableFactor::Derived { alias, .. } => {
+                    if let Some(a) = alias {
+                        out.push((self.k(&a.name), None));
+                    }
+                }
+                TableFactor::Nested(inner) => self.collect_sources(inner, out),
+            }
+        }
+    }
+
+    fn expr_type(&self, e: &Expr, sources: &[(String, Option<usize>)]) -> Option<DataType> {
+        let lookup = |qual: Option<String>, col: &Ident| {
+            let ck = self.k(col);
+            sources
+                .iter()
+                .filter(|(q, _)| qual.as_ref().is_none_or(|w| w == q))
+                .filter_map(|(_, ti)| ti.map(|ti| &self.tables[ti]))
+                .find_map(|t| t.columns.iter().find(|c| self.k(&c.name) == ck))
+                .and_then(|c| c.data_type.clone())
+        };
+        match e {
+            Expr::Identifier(id) => lookup(None, id),
+            Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+                lookup(Some(self.k(&parts[parts.len() - 2])), &parts[parts.len() - 1])
+            }
+            Expr::Cast { data_type, .. } => Some(data_type.clone()),
+            _ => None,
+        }
     }
 
     fn create_index(&mut self, c: &CreateIndex) -> Result<(), SchemaError> {

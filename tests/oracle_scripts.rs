@@ -239,6 +239,75 @@ fn dynamic_statements_that_cannot_apply_are_not_errors() {
 }
 
 #[test]
+fn create_table_as_select_round_trips() {
+    for (kind, sql) in [
+        (Postgres, "CREATE TABLE t AS SELECT a, b FROM u"),
+        (Postgres, "CREATE TABLE IF NOT EXISTS t (x, y) AS SELECT a, b FROM u"),
+        (Oracle, "CREATE GLOBAL TEMPORARY TABLE t AS SELECT a FROM u"),
+        (Sqlite, "CREATE TABLE t AS SELECT 1 AS one"),
+    ] {
+        assert_eq!(transpile(kind, kind, sql).unwrap(), format!("{sql};"));
+    }
+    assert!(check_syntax(Oracle, "CREATE TABLE t NOLOGGING TABLESPACE ts AS SELECT 1 AS a FROM dual").is_ok());
+    assert!(check_syntax(Oracle, "CREATE TABLE t (a, b) PARALLEL AS (SELECT 1, 2 FROM dual)").is_ok());
+    assert!(check_syntax(Postgres, "CREATE TABLE t AS SELECT 1 WITH NO DATA").is_ok());
+    assert!(check_syntax(Postgres, "CREATE TABLE t (a int) AS SELECT 1").is_err());
+    assert_eq!(
+        transpile(Oracle, Postgres, "CREATE TABLE t AS SELECT NVL(a, 0) AS a FROM u").unwrap(),
+        "CREATE TABLE t AS SELECT NVL(a, 0) AS a FROM u;"
+    );
+    let fp = sql_sage::fingerprint_sql(Postgres, "CREATE TABLE t AS SELECT a FROM u").unwrap();
+    assert_eq!(fp[0].to_string(), "create_table | t:create u:read | - | -");
+}
+
+#[test]
+fn create_table_as_select_derives_columns() {
+    assert_eq!(
+        derive(
+            Oracle,
+            "CREATE TABLE src (id NUMBER(10) NOT NULL, name VARCHAR2(20 CHAR), born DATE);
+             CREATE TABLE other (id NUMBER(10), city VARCHAR2(30));
+             CREATE TABLE copy1 AS SELECT * FROM src;
+             CREATE TABLE copy2 AS SELECT id, name AS full_name, CAST(born AS TIMESTAMP) AS born_ts, 1 + 1 AS two FROM src;
+             CREATE TABLE copy3 (a, b) AS SELECT s.id, o.city FROM src s JOIN other o ON o.id = s.id;
+             CREATE TABLE copy4 AS SELECT s.*, o.city FROM src s, other o WHERE s.id = o.id;
+             CREATE TABLE copy5 AS SELECT id FROM src UNION ALL SELECT id FROM other;
+             ALTER TABLE copy1 ADD extra NUMBER;
+             ALTER TABLE copy2 MODIFY (two NUMBER(3));"
+        ),
+        "CREATE TABLE src (id NUMBER(10) NOT NULL, name VARCHAR2(20 CHAR), born DATE);\n\
+         CREATE TABLE other (id NUMBER(10), city VARCHAR2(30));\n\
+         CREATE TABLE copy1 (id NUMBER(10), name VARCHAR2(20 CHAR), born DATE, extra NUMBER);\n\
+         CREATE TABLE copy2 (id NUMBER(10), full_name VARCHAR2(20 CHAR), born_ts TIMESTAMP, two NUMBER(3));\n\
+         CREATE TABLE copy3 (a NUMBER(10), b VARCHAR2(30));\n\
+         CREATE TABLE copy4 (id NUMBER(10), name VARCHAR2(20 CHAR), born DATE, city VARCHAR2(30));\n\
+         CREATE TABLE copy5 (id NUMBER(10));"
+    );
+    // Columns whose type cannot be known are printed as UNKNOWN.
+    assert_eq!(
+        derive(Oracle, "CREATE TABLE t AS SELECT SYSDATE AS now, x FROM nowhere;"),
+        "CREATE TABLE t (now UNKNOWN, x UNKNOWN);"
+    );
+}
+
+#[test]
+fn create_table_as_select_in_dynamic_sql() {
+    let mut s = Schema::new(Oracle);
+    let applied = s
+        .apply_sql(
+            "CREATE TABLE src (id NUMBER);
+             BEGIN
+               EXECUTE IMMEDIATE 'CREATE TABLE snap NOLOGGING AS SELECT id FROM src';
+               EXECUTE IMMEDIATE 'ALTER TABLE snap ADD note VARCHAR2(5)';
+             END;
+             /",
+        )
+        .unwrap();
+    assert_eq!(applied.dynamic_errors, vec![]);
+    assert_eq!(s.table("snap").unwrap().columns.len(), 2);
+}
+
+#[test]
 fn execute_immediate_inside_functions_and_procedures_is_not_applied() {
     let mut s = Schema::new(Oracle);
     s.apply_sql(

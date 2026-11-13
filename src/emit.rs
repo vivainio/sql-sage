@@ -325,6 +325,14 @@ impl<'a> Emitter<'a> {
             out.push_str("IF NOT EXISTS ");
         }
         out.push_str(&self.object_name(&c.name));
+        if let Some(q) = &c.as_query {
+            if !c.columns.is_empty() {
+                let names: Vec<_> = c.columns.iter().map(|c| self.ident(&c.name)).collect();
+                out.push_str(&format!(" ({})", names.join(", ")));
+            }
+            out.push_str(&format!(" AS {}", self.query(q)?));
+            return Ok(out);
+        }
         let mut items = vec![];
         for col in &c.columns {
             items.push(self.column_def(col)?);

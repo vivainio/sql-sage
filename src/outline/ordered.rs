@@ -137,6 +137,13 @@ impl Outline {
         if c.if_not_exists {
             head.push_str(" if not exists");
         }
+        if let Some(q) = &c.as_query {
+            if !c.columns.is_empty() {
+                let names: Vec<_> = c.columns.iter().map(|c| c.name.clone()).collect();
+                head.push_str(&format!(" ({})", self.ids(&names)));
+            }
+            return format!("{head} as\n{}", indent(&self.query(q), 2));
+        }
         let rows: Vec<(String, String, String)> = c
             .columns
             .iter()

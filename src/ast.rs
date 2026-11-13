@@ -333,8 +333,12 @@ pub struct CreateTable {
     pub temporary: bool,
     pub if_not_exists: bool,
     pub name: ObjectName,
+    /// With `as_query` only the names are given (`CREATE TABLE t (a, b) AS ...`, `data_type` is
+    /// `None`), or none at all.
     pub columns: Vec<ColumnDef>,
     pub constraints: Vec<TableConstraint>,
+    /// `CREATE TABLE ... AS SELECT ...`
+    pub as_query: Option<Box<Query>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -20,6 +20,7 @@ pub enum Statement {
     Delete(Delete),
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
+    AlterTable(AlterTable),
     Drop(Drop),
 }
 
@@ -382,6 +383,28 @@ pub enum TableConstraintKind {
     Unique(Vec<Ident>),
     ForeignKey { columns: Vec<Ident>, reference: ForeignKeyRef },
     Check(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterTable {
+    pub if_exists: bool,
+    pub name: ObjectName,
+    pub actions: Vec<AlterAction>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlterAction {
+    AddColumn { if_not_exists: bool, column: ColumnDef },
+    DropColumn { if_exists: bool, name: Ident, behavior: Option<DropBehavior> },
+    RenameColumn { old: Ident, new: Ident },
+    RenameTable(Ident),
+    AlterColumnType { name: Ident, data_type: DataType },
+    SetNotNull(Ident),
+    DropNotNull(Ident),
+    SetDefault { name: Ident, default: Expr },
+    DropDefault(Ident),
+    AddConstraint(TableConstraint),
+    DropConstraint { if_exists: bool, name: Ident, behavior: Option<DropBehavior> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -200,10 +200,12 @@ impl<'a> Parser<'a> {
             self.parse_delete()
         } else if self.peek_keyword("CREATE") {
             self.parse_create()
+        } else if self.peek_keyword("ALTER") {
+            self.parse_alter_table()
         } else if self.peek_keyword("DROP") {
             self.parse_drop()
         } else {
-            self.expected("a statement (SELECT, INSERT, UPDATE, DELETE, CREATE or DROP)")
+            self.expected("a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER or DROP)")
         }
     }
 
@@ -292,6 +294,134 @@ impl<'a> Parser<'a> {
         let selection = if self.parse_keyword("WHERE") { Some(self.parse_expr()?) } else { None };
         let returning = self.parse_returning()?;
         Ok(Statement::Delete(Delete { table, selection, returning }))
+    }
+
+    fn parse_drop_behavior(&mut self) -> Option<DropBehavior> {
+        match self.parse_one_of_keywords(&["CASCADE", "RESTRICT"]) {
+            Some("CASCADE") => Some(DropBehavior::Cascade),
+            Some(_) => Some(DropBehavior::Restrict),
+            None => None,
+        }
+    }
+
+    fn peek_table_constraint(&self) -> bool {
+        ["CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN", "CHECK"].iter().any(|k| self.peek_keyword(k))
+    }
+
+    fn parse_alter_table(&mut self) -> Result<Statement> {
+        self.expect_keyword("ALTER")?;
+        self.expect_keyword("TABLE")?;
+        let if_exists = self.parse_keywords(&["IF", "EXISTS"]);
+        let name = self.parse_object_name()?;
+        let mut actions = vec![];
+        loop {
+            self.parse_alter_action(&mut actions)?;
+            if !self.consume_token(&Token::Comma) {
+                break;
+            }
+        }
+        Ok(Statement::AlterTable(AlterTable { if_exists, name, actions }))
+    }
+
+    fn parse_alter_action(&mut self, out: &mut Vec<AlterAction>) -> Result<()> {
+        if self.parse_keyword("ADD") {
+            if self.peek_table_constraint() {
+                out.push(AlterAction::AddConstraint(self.parse_table_constraint()?));
+                return Ok(());
+            }
+            let _ = self.parse_keyword("COLUMN");
+            let if_not_exists = self.parse_keywords(&["IF", "NOT", "EXISTS"]);
+            // Oracle: ADD (a int, b int)
+            if self.consume_token(&Token::LParen) {
+                loop {
+                    if self.peek_table_constraint() {
+                        out.push(AlterAction::AddConstraint(self.parse_table_constraint()?));
+                    } else {
+                        out.push(AlterAction::AddColumn { if_not_exists, column: self.parse_column_def()? });
+                    }
+                    if !self.consume_token(&Token::Comma) {
+                        break;
+                    }
+                }
+                return self.expect_token(&Token::RParen);
+            }
+            out.push(AlterAction::AddColumn { if_not_exists, column: self.parse_column_def()? });
+        } else if self.parse_keyword("DROP") {
+            if self.parse_keyword("CONSTRAINT") {
+                let if_exists = self.parse_keywords(&["IF", "EXISTS"]);
+                let name = self.parse_ident()?;
+                let behavior = self.parse_drop_behavior();
+                out.push(AlterAction::DropConstraint { if_exists, name, behavior });
+                return Ok(());
+            }
+            let _ = self.parse_keyword("COLUMN");
+            let if_exists = self.parse_keywords(&["IF", "EXISTS"]);
+            // Oracle: DROP (a, b)
+            let names = if *self.peek_token() == Token::LParen {
+                self.parse_paren_idents()?
+            } else {
+                vec![self.parse_ident()?]
+            };
+            let behavior = self.parse_drop_behavior();
+            for name in names {
+                out.push(AlterAction::DropColumn { if_exists, name, behavior });
+            }
+        } else if self.parse_keyword("RENAME") {
+            if self.parse_keyword("TO") {
+                out.push(AlterAction::RenameTable(self.parse_ident()?));
+            } else {
+                let _ = self.parse_keyword("COLUMN");
+                let old = self.parse_ident()?;
+                self.expect_keyword("TO")?;
+                out.push(AlterAction::RenameColumn { old, new: self.parse_ident()? });
+            }
+        } else if self.parse_keyword("ALTER") {
+            let _ = self.parse_keyword("COLUMN");
+            let name = self.parse_ident()?;
+            if self.parse_keywords(&["SET", "NOT", "NULL"]) {
+                out.push(AlterAction::SetNotNull(name));
+            } else if self.parse_keywords(&["DROP", "NOT", "NULL"]) {
+                out.push(AlterAction::DropNotNull(name));
+            } else if self.parse_keywords(&["SET", "DEFAULT"]) {
+                out.push(AlterAction::SetDefault { name, default: self.parse_expr()? });
+            } else if self.parse_keywords(&["DROP", "DEFAULT"]) {
+                out.push(AlterAction::DropDefault(name));
+            } else {
+                let _ = self.parse_keywords(&["SET", "DATA"]);
+                self.expect_keyword("TYPE")?;
+                let data_type = self.parse_data_type()?;
+                if self.parse_keyword("USING") {
+                    self.parse_expr()?;
+                }
+                out.push(AlterAction::AlterColumnType { name, data_type });
+            }
+        } else if self.parse_keyword("MODIFY") {
+            // Oracle: MODIFY col [type] [DEFAULT x] [NOT NULL | NULL], or MODIFY (c1 ..., c2 ...)
+            let paren = self.consume_token(&Token::LParen);
+            loop {
+                let name = self.parse_ident()?;
+                if !(self.peek_keyword("DEFAULT") || self.peek_keyword("NOT") || self.peek_keyword("NULL")) {
+                    out.push(AlterAction::AlterColumnType { name: name.clone(), data_type: self.parse_data_type()? });
+                }
+                if self.parse_keyword("DEFAULT") {
+                    out.push(AlterAction::SetDefault { name: name.clone(), default: self.parse_expr()? });
+                }
+                if self.parse_keywords(&["NOT", "NULL"]) {
+                    out.push(AlterAction::SetNotNull(name));
+                } else if self.parse_keyword("NULL") {
+                    out.push(AlterAction::DropNotNull(name));
+                }
+                if !(paren && self.consume_token(&Token::Comma)) {
+                    break;
+                }
+            }
+            if paren {
+                self.expect_token(&Token::RParen)?;
+            }
+        } else {
+            return self.expected("ADD, DROP, RENAME, ALTER or MODIFY");
+        }
+        Ok(())
     }
 
     fn parse_drop(&mut self) -> Result<Statement> {
@@ -430,7 +560,7 @@ impl<'a> Parser<'a> {
         let name = self.parse_ident()?;
         let untyped = self.dialect.supports_untyped_columns()
             && match self.peek_token() {
-                Token::Comma | Token::RParen => true,
+                Token::Comma | Token::RParen | Token::Semicolon | Token::Eof => true,
                 Token::Word(w) => [
                     "CONSTRAINT",
                     "NOT",

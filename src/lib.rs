@@ -23,6 +23,7 @@ pub mod functions;
 pub mod lexer;
 pub mod outline;
 pub mod parser;
+pub mod schema;
 
 pub use emit::EmitError;
 pub use error::{Location, ParseError};

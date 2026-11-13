@@ -248,7 +248,7 @@ impl<'a> Emitter<'a> {
             }
             Statement::Other(o) => {
                 if let (Some(s), Some(t)) = (self.source, self.target) {
-                    if s.name() != t.name() {
+                    if s.name() != t.name() && !o.is_portable() {
                         self.fail(format!("{} statements cannot be translated", o.kind), None)?;
                     }
                 }
@@ -593,12 +593,26 @@ impl<'a> Emitter<'a> {
     }
 
     fn create_view(&self, c: &CreateView) -> R {
-        let mut out = String::from("CREATE ");
-        if c.or_replace {
+        let sqlite = self.target.is_some_and(|d| d.name() == "sqlite");
+        let mut out = String::new();
+        if c.or_replace && sqlite {
+            // SQLite has no OR REPLACE
+            out.push_str(&format!("DROP VIEW IF EXISTS {}; ", self.object_name(&c.name)));
+            self.note(Severity::Rewritten, "CREATE OR REPLACE VIEW -> DROP VIEW IF EXISTS + CREATE VIEW", None);
+        }
+        out.push_str("CREATE ");
+        if c.or_replace && !sqlite {
             self.need(|d| d.name() != "sqlite", "CREATE OR REPLACE VIEW")?;
             out.push_str("OR REPLACE ");
         }
-        if c.force {
+        if c.force && sqlite {
+            // SQLite never checks the objects a view uses when it is created
+            self.note(
+                Severity::Rewritten,
+                "FORCE dropped: SQLite does not check a view's tables when it is created",
+                None,
+            );
+        } else if c.force {
             self.need(|d| d.name() == "oracle", "CREATE FORCE VIEW")?;
             out.push_str("FORCE ");
         }
@@ -1426,7 +1440,33 @@ impl<'a> Emitter<'a> {
             self.note(Severity::Rewritten, what.to_string(), Some(out.clone()));
             Ok(out)
         };
+        if let ("TO_DATE" | "TO_TIMESTAMP", [Expr::Value(Value::String(v)), Expr::Value(Value::String(mask))]) =
+            (name.as_str(), args.as_slice())
+        {
+            // both arguments are literals: evaluate the conversion now
+            if let Some(t) = fold_datetime(v, mask) {
+                return Some(rewritten(quote_str(&t), &format!("{name}('{v}', '{mask}') -> '{t}'")));
+            }
+        }
         match (name.as_str(), args.as_slice()) {
+            ("SYS_GUID", []) => Some(rewritten("hex(randomblob(16))".into(), "SYS_GUID() -> hex(randomblob(16))")),
+            ("SYS_EXTRACT_UTC", [x]) => {
+                let now = matches!(x, Expr::Identifier(i) if i.quote_style.is_none()
+                    && ["SYSTIMESTAMP", "CURRENT_TIMESTAMP", "LOCALTIMESTAMP", "SYSDATE"]
+                        .iter()
+                        .any(|k| i.value.eq_ignore_ascii_case(k)));
+                if now {
+                    return Some(rewritten("datetime('now')".into(), "SYS_EXTRACT_UTC(now) -> datetime('now')"));
+                }
+                Some(self.expr(x).and_then(|x| {
+                    self.note(
+                        Severity::Warning,
+                        "SYS_EXTRACT_UTC -> datetime(): a value without an offset is taken as UTC",
+                        None,
+                    );
+                    rewritten(format!("datetime({x})"), "SYS_EXTRACT_UTC -> datetime()")
+                }))
+            }
             ("NVL", [a, b]) if !f.distinct => Some((|| {
                 let out = format!("COALESCE({}, {})", self.expr(a)?, self.expr(b)?);
                 rewritten(out, "NVL -> COALESCE")
@@ -1544,13 +1584,13 @@ impl<'a> Emitter<'a> {
                         .and_then(|d| self.done("TO_CHAR -> strftime", format!("strftime({}, {d})", quote_str(&fmt)))),
                 )
             }
-            ("TO_DATE", [x, Expr::Value(Value::String(mask))]) => {
+            ("TO_DATE" | "TO_TIMESTAMP", [x, Expr::Value(Value::String(mask))]) => {
                 let f = match mask.to_ascii_uppercase().as_str() {
                     "YYYY-MM-DD" => "date",
                     "YYYY-MM-DD HH24:MI:SS" => "datetime",
                     _ => return None,
                 };
-                Some(self.expr(x).and_then(|x| self.done(&format!("TO_DATE -> {f}"), format!("{f}({x})"))))
+                Some(self.expr(x).and_then(|x| self.done(&format!("{name} -> {f}"), format!("{f}({x})"))))
             }
             ("NANVL", [a, _]) => Some(self.expr(a).and_then(|a| {
                 self.note(Severity::Warning, "NANVL -> its first argument: SQLite stores NaN as NULL", None);
@@ -1781,6 +1821,153 @@ fn strftime_format(mask: &str) -> Option<String> {
             i += 1;
         } else {
             return None;
+        }
+    }
+    Some(out)
+}
+
+/// `TO_DATE('01/02/2020 1:05:00 PM', 'MM/DD/YYYY HH:MI:SS AM')` evaluated at translation time,
+/// as the text SQLite's date functions read (`2020-01-02 13:05:00`). `None` when the mask uses
+/// anything that is not understood, the value does not fit it, or the date is not complete.
+fn fold_datetime(value: &str, mask: &str) -> Option<String> {
+    const MONTHS: [&str; 12] = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    if !value.is_ascii() || !mask.is_ascii() {
+        return None;
+    }
+    let (m, v) = (mask.to_ascii_uppercase(), value.as_bytes());
+    let (mut mi, mut vi) = (0usize, 0usize);
+    let (mut year, mut month, mut day) = (None, None, None);
+    let (mut hour, mut minute, mut second) = (0u32, 0u32, 0u32);
+    let (mut frac, mut pm, mut hour12, mut has_time) = (None::<String>, None::<bool>, false, false);
+    let number = |vi: &mut usize, max: usize| -> Option<u32> {
+        let start = *vi;
+        while *vi < v.len() && *vi - start < max && v[*vi].is_ascii_digit() {
+            *vi += 1;
+        }
+        if *vi == start {
+            return None;
+        }
+        value[start..*vi].parse().ok()
+    };
+    let digits = |vi: &mut usize| -> Option<String> {
+        let start = *vi;
+        while *vi < v.len() && v[*vi].is_ascii_digit() {
+            *vi += 1;
+        }
+        (*vi > start).then(|| value[start..*vi].to_string())
+    };
+    while mi < m.len() {
+        let rest = &m[mi..];
+        if rest.starts_with("YYYY") || rest.starts_with("RRRR") {
+            year = Some(number(&mut vi, 4)?);
+            mi += 4;
+        } else if rest.starts_with("YY") || rest.starts_with("RR") {
+            let y = number(&mut vi, 2)?;
+            year = Some(if y < 50 { 2000 + y } else { 1900 + y });
+            mi += 2;
+        } else if rest.starts_with("MONTH") {
+            return None;
+        } else if rest.starts_with("MON") {
+            let name = value.get(vi..vi + 3)?.to_ascii_uppercase();
+            month = Some(MONTHS.iter().position(|x| *x == name)? as u32 + 1);
+            vi += 3;
+            mi += 3;
+        } else if rest.starts_with("MM") {
+            month = Some(number(&mut vi, 2)?);
+            mi += 2;
+        } else if rest.starts_with("DD") {
+            day = Some(number(&mut vi, 2)?);
+            mi += 2;
+        } else if rest.starts_with("HH24") {
+            hour = number(&mut vi, 2)?;
+            has_time = true;
+            mi += 4;
+        } else if rest.starts_with("HH12") || rest.starts_with("HH") {
+            hour = number(&mut vi, 2)?;
+            hour12 = true;
+            has_time = true;
+            mi += if rest.starts_with("HH12") { 4 } else { 2 };
+        } else if rest.starts_with("MI") {
+            minute = number(&mut vi, 2)?;
+            has_time = true;
+            mi += 2;
+        } else if rest.starts_with("SS") {
+            second = number(&mut vi, 2)?;
+            has_time = true;
+            mi += 2;
+        } else if rest.starts_with("XFF") || rest.starts_with("FF") {
+            if rest.starts_with("XFF") {
+                if vi < v.len() && matches!(v[vi], b'.' | b',') {
+                    vi += 1;
+                }
+                mi += 3;
+            } else {
+                mi += 2;
+            }
+            if m.as_bytes().get(mi).is_some_and(u8::is_ascii_digit) {
+                mi += 1;
+            }
+            frac = Some(digits(&mut vi)?);
+            has_time = true;
+        } else if rest.starts_with("A.M.") || rest.starts_with("P.M.") {
+            let got = value.get(vi..vi + 4)?.to_ascii_uppercase();
+            pm = Some(match got.as_str() {
+                "A.M." => false,
+                "P.M." => true,
+                _ => return None,
+            });
+            vi += 4;
+            mi += 4;
+        } else if rest.starts_with("AM") || rest.starts_with("PM") {
+            let got = value.get(vi..vi + 2)?.to_ascii_uppercase();
+            pm = Some(match got.as_str() {
+                "AM" => false,
+                "PM" => true,
+                _ => return None,
+            });
+            vi += 2;
+            mi += 2;
+        } else if m.as_bytes()[mi].is_ascii_alphanumeric() || m.as_bytes()[mi] == b'"' {
+            return None;
+        } else {
+            // a separator in the mask matches any run of separators in the value
+            mi += 1;
+            let start = vi;
+            while vi < v.len() && !v[vi].is_ascii_alphanumeric() {
+                vi += 1;
+            }
+            if vi == start {
+                return None;
+            }
+        }
+    }
+    if v[vi..].iter().any(|c| !c.is_ascii_whitespace()) {
+        return None;
+    }
+    if hour12 {
+        if !(1..=12).contains(&hour) {
+            return None;
+        }
+        hour = hour % 12 + if pm == Some(true) { 12 } else { 0 };
+    }
+    let (year, month, day) = (year?, month?, day?);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let mut out = format!("{year:04}-{month:02}-{day:02}");
+    if has_time {
+        out.push_str(&format!(" {hour:02}:{minute:02}:{second:02}"));
+        if let Some(f) = frac.filter(|f| f.chars().any(|c| c != '0')) {
+            out.push('.');
+            out.push_str(&f[..f.len().min(6)]);
         }
     }
     Some(out)

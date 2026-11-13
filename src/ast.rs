@@ -756,6 +756,13 @@ pub struct Other {
     pub text: String,
 }
 
+impl Other {
+    /// Transaction control is the same in every dialect, so it translates as written.
+    pub fn is_portable(&self) -> bool {
+        matches!(self.kind.as_str(), "COMMIT" | "ROLLBACK" | "SAVEPOINT")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateSequence {
     pub if_not_exists: bool,

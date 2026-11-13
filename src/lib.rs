@@ -75,7 +75,7 @@ pub fn transpile(from: DialectKind, to: DialectKind, sql: &str) -> Result<String
             }
         }
         if let Statement::Other(o) = s {
-            if from != to {
+            if from != to && !o.is_portable() {
                 let message = format!("{} statements cannot be translated", o.kind);
                 return Err(TranspileError::Emit(EmitError { message }));
             }

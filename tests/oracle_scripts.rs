@@ -141,7 +141,10 @@ fn views_are_tracked_and_replaced() {
         "CREATE TABLE t (a INT);\nCREATE OR REPLACE VIEW v (x) AS SELECT a FROM t WHERE a > 0;"
     );
     assert_eq!(errors(Postgres, "CREATE VIEW v AS SELECT 1; CREATE VIEW v AS SELECT 2;"), ["view v already exists"]);
-    assert!(transpile(Postgres, Sqlite, "CREATE OR REPLACE VIEW v AS SELECT 1").is_err());
+    assert_eq!(
+        transpile(Postgres, Sqlite, "CREATE OR REPLACE VIEW v AS SELECT 1").unwrap(),
+        "DROP VIEW IF EXISTS v; CREATE VIEW v AS SELECT 1;"
+    );
     assert!(transpile(Oracle, Postgres, "CREATE OR REPLACE FORCE VIEW v AS SELECT 1 FROM dual").is_err());
 }
 

@@ -242,7 +242,14 @@ impl<'a> Emitter<'a> {
                 "TRUNCATE TABLE {}",
                 t.tables.iter().map(|n| self.object_name(n)).collect::<Vec<_>>().join(", ")
             )),
-            Statement::Plsql(u) => Ok(u.text.clone()),
+            Statement::Plsql(u) => {
+                if let (Some(s), Some(t)) = (self.source, self.target) {
+                    if s.name() != t.name() {
+                        self.fail(format!("{} cannot be translated", u.kind.label()), None)?;
+                    }
+                }
+                Ok(u.text.clone())
+            }
             Statement::If(i) => {
                 self.need(|d| d.name() == "sqlserver", "IF statements")?;
                 let mut out = format!("IF {} {}", self.expr(&i.condition)?, self.statement(&i.then)?);

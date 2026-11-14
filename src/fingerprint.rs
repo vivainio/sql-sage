@@ -106,6 +106,8 @@ pub enum Operation {
     Group,
     Having,
     Hierarchy,
+    /// SQL built as a string inside PL/SQL (`EXECUTE IMMEDIATE`).
+    Dynamic,
     Distinct,
     Sort,
     Limit,
@@ -137,6 +139,7 @@ impl fmt::Display for Operation {
             Operation::Group => "group",
             Operation::Having => "having",
             Operation::Hierarchy => "hierarchy",
+            Operation::Dynamic => "dynamic",
             Operation::Distinct => "distinct",
             Operation::Sort => "sort",
             Operation::Limit => "limit",
@@ -303,6 +306,16 @@ struct Collector {
     functions: BTreeSet<String>,
     /// CTE names in scope (lower-case); references to them are not tables.
     ctes: Vec<BTreeSet<String>>,
+}
+
+/// The text of a string literal, or of literals joined with `||`.
+fn literal_text(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Value(Value::String(s)) => Some(s.clone()),
+        Expr::Nested(inner) => literal_text(inner),
+        Expr::BinaryOp { left, op: BinaryOperator::Concat, right } => Some(literal_text(left)? + &literal_text(right)?),
+        _ => None,
+    }
 }
 
 fn normalize(n: &ObjectName) -> String {
@@ -482,7 +495,10 @@ impl Collector {
                 }
                 StatementKind::Truncate
             }
-            Statement::Plsql(_) => StatementKind::Plsql,
+            Statement::Plsql(u) => {
+                self.plsql_unit(u);
+                StatementKind::Plsql
+            }
             Statement::If(i) => {
                 self.expr(&i.condition);
                 let kind = self.statement(&i.then);
@@ -519,6 +535,154 @@ impl Collector {
         match t {
             TableFactor::Table { name, .. } => self.table(name, access),
             other => self.table_factor(other),
+        }
+    }
+
+    // ----------------------------------------------------------- PL/SQL
+
+    /// The tables and functions a PL/SQL unit uses: its embedded SQL, cursors, conditions and
+    /// calls, and the SQL in `EXECUTE IMMEDIATE` strings it spells out as literals. A trigger
+    /// also counts as an `alter` of its table.
+    fn plsql_unit(&mut self, u: &PlsqlUnit) {
+        for p in &u.params {
+            if let Some(d) = &p.default {
+                self.expr(d);
+            }
+        }
+        if let Some(t) = &u.trigger {
+            self.table(&t.table, Access::Alter);
+            if let Some(w) = &t.when {
+                self.expr(w);
+            }
+            for (_, section) in &t.sections {
+                self.plsql_block(section);
+            }
+        }
+        self.plsql_block(&u.block);
+    }
+
+    fn plsql_block(&mut self, b: &PlsqlBlock) {
+        for d in &b.declarations {
+            match d {
+                PlDeclaration::Variable { default, .. } => {
+                    if let Some(d) = default {
+                        self.expr(d);
+                    }
+                }
+                PlDeclaration::Cursor { query, params, .. } => {
+                    for d in params.iter().filter_map(|p| p.default.as_ref()) {
+                        self.expr(d);
+                    }
+                    self.query(query);
+                }
+                PlDeclaration::Subprogram(s) => {
+                    for d in s.params.iter().filter_map(|p| p.default.as_ref()) {
+                        self.expr(d);
+                    }
+                    if let Some(block) = &s.block {
+                        self.plsql_block(block);
+                    }
+                }
+                PlDeclaration::Exception(_) | PlDeclaration::Pragma(_) | PlDeclaration::Type { .. } => {}
+            }
+        }
+        self.plsql_statements(&b.body);
+        for h in &b.handlers {
+            self.plsql_statements(&h.body);
+        }
+    }
+
+    fn plsql_statements(&mut self, v: &[PlStatement]) {
+        for s in v {
+            self.plsql_statement(s);
+        }
+    }
+
+    fn plsql_statement(&mut self, s: &PlStatement) {
+        match s {
+            PlStatement::Null | PlStatement::Goto(_) | PlStatement::Raise(_) | PlStatement::Close(_) => {}
+            PlStatement::Assign { value, .. } => self.expr(value),
+            PlStatement::If { branches, else_body } => {
+                for (c, body) in branches {
+                    self.expr(c);
+                    self.plsql_statements(body);
+                }
+                self.plsql_statements(else_body);
+            }
+            PlStatement::Case { operand, whens, else_body } => {
+                if let Some(o) = operand {
+                    self.expr(o);
+                }
+                for (c, body) in whens {
+                    self.expr(c);
+                    self.plsql_statements(body);
+                }
+                if let Some(body) = else_body {
+                    self.plsql_statements(body);
+                }
+            }
+            PlStatement::Loop { body, .. } => self.plsql_statements(body),
+            PlStatement::While { condition, body, .. } => {
+                self.expr(condition);
+                self.plsql_statements(body);
+            }
+            PlStatement::ForRange { low, high, body, .. } => {
+                self.expr(low);
+                self.expr(high);
+                self.plsql_statements(body);
+            }
+            PlStatement::ForIn { source, body, .. } => {
+                match source {
+                    PlCursorSource::Query(q) => self.query(q),
+                    PlCursorSource::Cursor(e) => self.expr(e),
+                }
+                self.plsql_statements(body);
+            }
+            PlStatement::Forall { low, high, statement, .. } => {
+                self.expr(low);
+                self.expr(high);
+                self.plsql_statement(statement);
+            }
+            PlStatement::Return(e) => {
+                if let Some(e) = e {
+                    self.expr(e);
+                }
+            }
+            PlStatement::Exit { when, .. } | PlStatement::Continue { when, .. } => {
+                if let Some(e) = when {
+                    self.expr(e);
+                }
+            }
+            PlStatement::Sql { statement, .. } => {
+                self.statement(statement);
+            }
+            PlStatement::ExecuteImmediate { sql, using, .. } => {
+                self.ops.insert(Operation::Dynamic);
+                self.expr(sql);
+                for e in using {
+                    self.expr(e);
+                }
+                if let Some(text) = literal_text(sql) {
+                    self.dynamic_sql(&text);
+                }
+            }
+            PlStatement::Open { query, .. } => {
+                if let Some(q) = query {
+                    self.query(q);
+                }
+            }
+            PlStatement::Fetch { .. } => {}
+            PlStatement::Call(e) => self.expr(e),
+            PlStatement::Block(b) => self.plsql_block(b),
+        }
+    }
+
+    /// SQL spelled out in an `EXECUTE IMMEDIATE` string; text that does not parse is ignored.
+    fn dynamic_sql(&mut self, text: &str) {
+        let dialect = crate::dialect::OracleDialect;
+        let Ok(mut parser) = crate::parser::Parser::new(&dialect, text) else { return };
+        for s in parser.parse_statements_lenient().statements {
+            self.statement(&s.statement);
         }
     }
 

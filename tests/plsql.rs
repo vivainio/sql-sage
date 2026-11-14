@@ -211,3 +211,59 @@ fn plsql_units_in_a_schema_are_counted_and_their_dynamic_sql_applied() {
     assert_eq!(applied.plsql.len(), 3);
     assert_eq!(s.table("t").unwrap().columns.len(), 2);
 }
+
+#[test]
+fn fingerprints_report_the_tables_and_functions_a_unit_uses() {
+    let fp = |sql: &str| sql_sage::fingerprint_sql(Oracle, sql).unwrap().remove(0);
+    let block = fp("DECLARE
+           CURSOR c IS SELECT id FROM src WHERE d > SYSDATE;
+         BEGIN
+           FOR r IN c LOOP
+             INSERT INTO dst (id) VALUES (r.id);
+             UPDATE audit SET n = n + 1 WHERE id = r.id;
+           END LOOP;
+           IF SQL%ROWCOUNT = 0 THEN
+             DELETE FROM stale WHERE ts < SYSDATE - 1;
+           END IF;
+           SELECT COUNT(*) INTO v FROM counts;
+           EXECUTE IMMEDIATE 'ALTER TABLE ' || 'dyn ADD c NUMBER';
+           EXECUTE IMMEDIATE 'DELETE FROM ' || v_table;
+           log_it('done');
+         EXCEPTION WHEN OTHERS THEN
+           INSERT INTO errors VALUES (1);
+         END;");
+    assert_eq!(
+        block.to_string(),
+        "plsql | audit:update counts:read dst:insert dyn:alter errors:insert src:read stale:delete \
+         | filter dynamic aggregate values | count() log_it()"
+    );
+    let trigger = fp("CREATE OR REPLACE TRIGGER trg BEFORE INSERT ON orders FOR EACH ROW
+         BEGIN
+           IF :NEW.total > 0 THEN
+             INSERT INTO audit_log (id) VALUES (:NEW.id);
+           END IF;
+         END;");
+    assert_eq!(trigger.to_string(), "plsql | audit_log:insert orders:alter | values | -");
+    let function = fp("CREATE FUNCTION f(p NUMBER) RETURN NUMBER IS v NUMBER;
+         BEGIN
+           SELECT MAX(x) INTO v FROM t WHERE y = p;
+           RETURN NVL(v, 0);
+         END;");
+    assert_eq!(function.to_string(), "plsql | t:read | filter aggregate | max() nvl()");
+}
+
+#[test]
+fn a_plsql_fingerprint_id_does_not_depend_on_literals_or_names() {
+    let id = |sql: &str| sql_sage::fingerprint_sql(Oracle, sql).unwrap().remove(0).id();
+    assert_eq!(
+        id("BEGIN UPDATE t SET a = 1 WHERE b = 2; END;"),
+        id("DECLARE x NUMBER := 5; BEGIN UPDATE t SET c = x WHERE d = 'q'; END;")
+    );
+    assert_ne!(id("BEGIN UPDATE t SET a = 1; END;"), id("BEGIN UPDATE u SET a = 1; END;"));
+}
+
+#[test]
+fn plsql_runs_on_oracle_only() {
+    let fp = sql_sage::fingerprint_sql(Oracle, "BEGIN NULL; END;").unwrap().remove(0);
+    assert_eq!(fp.compat_code(), "ora");
+}

@@ -990,6 +990,11 @@ impl<'a> Emitter<'a> {
     pub fn set_expr(&self, e: &SetExpr) -> R {
         Ok(match e {
             SetExpr::Select(s) => self.select(s)?,
+            // SQLite rejects `(SELECT ..) UNION (SELECT ..)`; around a plain SELECT the parentheses change nothing
+            SetExpr::Query(q) if self.rewrites_for_sqlite() && is_plain_select(q) => {
+                self.note(Severity::Rewritten, "parentheses around a set operand removed: SQLite has none", None);
+                self.query(q)?
+            }
             SetExpr::Query(q) => format!("({})", self.query(q)?),
             SetExpr::Values(v) => {
                 if v.rows.len() > 1 {
@@ -1981,6 +1986,17 @@ fn is_date_expr(e: &Expr) -> bool {
             | "ADD_MONTHS"
             | "LAST_DAY"
     )
+}
+
+/// A query that is just a `SELECT`: no `WITH`, `ORDER BY`, row limit or locking clause.
+fn is_plain_select(q: &Query) -> bool {
+    matches!(q.body, SetExpr::Select(_))
+        && q.with.is_none()
+        && q.order_by.is_empty()
+        && q.limit.is_none()
+        && q.offset.is_none()
+        && q.fetch.is_none()
+        && q.for_update.is_none()
 }
 
 /// A regular expression that matches only itself: no metacharacters and no backslash escapes.

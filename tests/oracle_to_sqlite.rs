@@ -230,3 +230,14 @@ fn regexp_replace_with_a_plain_text_pattern_becomes_replace() {
         assert!(transpile(Oracle, Sqlite, sql).unwrap().contains("REGEXP_REPLACE"), "{sql}");
     }
 }
+
+#[test]
+fn parenthesised_select_operands_lose_their_parentheses() {
+    assert_eq!(
+        lite("SELECT * FROM ((SELECT 1 a FROM dual) UNION (SELECT 2 FROM dual))"),
+        "SELECT * FROM (SELECT 1 AS a UNION SELECT 2);"
+    );
+    // an operand with its own ORDER BY or limit keeps the parentheses (and SQLite cannot take them)
+    let out = transpile(Oracle, Sqlite, "SELECT a FROM t UNION (SELECT a FROM u ORDER BY a)").unwrap();
+    assert!(out.contains("(SELECT a FROM u ORDER BY a)"), "{out}");
+}

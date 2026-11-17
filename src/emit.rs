@@ -1643,6 +1643,41 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// `TO_DATE(x, 'YYYYMMDD')` and similar masks where every field has a fixed width: read the
+    /// pieces of the text with `substr` and let `date`/`datetime` build the value. Oracle also accepts
+    /// shorter fields (`1/2/2020`), which this does not.
+    fn fixed_width_to_date(&self, name: &str, x: &Expr, mask: &str) -> Option<R> {
+        // a literal is folded (and an impossible date refused) at translation time; SQLite would normalise 31 Feb
+        if matches!(x, Expr::Value(Value::String(_))) {
+            return None;
+        }
+        let parts = fixed_width_parts(mask)?;
+        Some((|| {
+            let x = self.expr(x)?;
+            let piece = |t: &str, default: &str| match parts.iter().find(|p| p.0 == t) {
+                Some((_, at, width)) => format!("substr({x}, {at}, {width})"),
+                None => quote_str(default),
+            };
+            let has_time = parts.iter().any(|p| p.0 == "HH24");
+            let date = format!("{} || '-' || {} || '-' || {}", piece("YYYY", ""), piece("MM", ""), piece("DD", ""));
+            let (f, text) = if has_time {
+                let time =
+                    format!("{} || ':' || {} || ':' || {}", piece("HH24", "00"), piece("MI", "00"), piece("SS", "00"));
+                ("datetime", format!("{date} || ' ' || {time}"))
+            } else {
+                ("date", date)
+            };
+            self.note(
+                Severity::Warning,
+                format!(
+                    "{name} with mask '{mask}' reads fixed positions: the text must be exactly as wide as the mask"
+                ),
+                None,
+            );
+            self.done(&format!("{name} with a fixed-width mask -> {f}(substr(...))"), format!("{f}({text})"))
+        })())
+    }
+
     fn done(&self, what: &str, out: String) -> R {
         self.note(Severity::Rewritten, what.to_string(), Some(out.clone()));
         Ok(out)
@@ -1709,6 +1744,25 @@ impl<'a> Emitter<'a> {
                     self.done("INSTR with a start position -> instr(substr(...))", out)
                 })())
             }
+            ("REGEXP_REPLACE", [x, Expr::Value(Value::String(pat)), rest @ ..])
+                if is_literal_regex(pat)
+                    && match rest {
+                        [] => true,
+                        [Expr::Value(Value::String(rep))] => !rep.contains('\\'),
+                        _ => false,
+                    } =>
+            {
+                let rep = match rest {
+                    [Expr::Value(Value::String(rep))] => rep.as_str(),
+                    _ => "",
+                };
+                Some(self.expr(x).and_then(|x| {
+                    self.done(
+                        "REGEXP_REPLACE with a plain-text pattern -> replace",
+                        format!("replace({x}, {}, {})", quote_str(pat), quote_str(rep)),
+                    )
+                }))
+            }
             ("TO_CHAR", [d, Expr::Value(Value::String(mask))]) => {
                 let fmt = strftime_format(mask)?;
                 Some(
@@ -1720,7 +1774,7 @@ impl<'a> Emitter<'a> {
                 let f = match mask.to_ascii_uppercase().as_str() {
                     "YYYY-MM-DD" => "date",
                     "YYYY-MM-DD HH24:MI:SS" => "datetime",
-                    _ => return None,
+                    _ => return self.fixed_width_to_date(name, x, mask),
                 };
                 Some(self.expr(x).and_then(|x| self.done(&format!("{name} -> {f}"), format!("{f}({x})"))))
             }
@@ -1927,6 +1981,40 @@ fn is_date_expr(e: &Expr) -> bool {
             | "ADD_MONTHS"
             | "LAST_DAY"
     )
+}
+
+/// A regular expression that matches only itself: no metacharacters and no backslash escapes.
+fn is_literal_regex(pattern: &str) -> bool {
+    !pattern.is_empty() && !pattern.contains(['\\', '^', '$', '.', '|', '?', '*', '+', '(', ')', '[', ']', '{', '}'])
+}
+
+/// The slices of a date text that a fixed-width mask (`YYYYMMDD`, `DD/MM/YYYY HH24:MI`) reads, as
+/// `(token, offset, width)` with 1-based offsets for `substr`. `None` unless the mask holds a complete
+/// date (`YYYY`, `MM`, `DD`), optionally the time as `HH24` then `MI` then `SS`, and plain separators.
+fn fixed_width_parts(mask: &str) -> Option<Vec<(&'static str, usize, usize)>> {
+    const TOKENS: [(&str, usize); 6] = [("YYYY", 4), ("HH24", 2), ("MM", 2), ("DD", 2), ("MI", 2), ("SS", 2)];
+    if !mask.is_ascii() {
+        return None;
+    }
+    let upper = mask.to_ascii_uppercase();
+    let (mut i, mut pos, mut parts) = (0, 1, vec![]);
+    while i < upper.len() {
+        let rest = &upper[i..];
+        if let Some((tok, width)) = TOKENS.iter().find(|(t, _)| rest.starts_with(t)) {
+            parts.push((*tok, pos, *width));
+            i += tok.len();
+            pos += width;
+        } else if matches!(rest.as_bytes()[0], b'-' | b'/' | b':' | b'.' | b' ') {
+            i += 1;
+            pos += 1;
+        } else {
+            return None;
+        }
+    }
+    let has = |t: &str| parts.iter().filter(|p| p.0 == t).count();
+    let distinct = TOKENS.iter().all(|(t, _)| has(t) <= 1);
+    let time_ok = (has("SS") == 0 || has("MI") == 1) && (has("MI") == 0 || has("HH24") == 1);
+    (distinct && has("YYYY") == 1 && has("MM") == 1 && has("DD") == 1 && time_ok).then_some(parts)
 }
 
 /// An Oracle/PostgreSQL date mask as a `strftime` format, or `None` when it

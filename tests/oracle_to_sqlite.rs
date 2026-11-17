@@ -92,9 +92,8 @@ fn to_date_without_a_mask_and_round_trips_through_to_char() {
         "CREATE INDEX i ON t (date(valid_from));"
     );
     // with a time of day in the mask the round trip keeps it, so it is not a plain date()
-    assert!(transpile(Oracle, Sqlite, "SELECT TO_DATE(TO_CHAR(d, 'MM/DD/YYYY HH24:MI'), 'MM/DD/YYYY HH24:MI') FROM t")
-        .unwrap()
-        .contains("TO_DATE("));
+    let out = lite("SELECT TO_DATE(TO_CHAR(d, 'MM/DD/YYYY HH24:MI'), 'MM/DD/YYYY HH24:MI') FROM t");
+    assert!(out.starts_with("SELECT datetime(substr(strftime('%m/%d/%Y %H:%M', d), 7, 4)"), "{out}");
 }
 
 #[test]
@@ -198,4 +197,36 @@ fn transaction_control_translates_everywhere() {
     }
     // Other unmodeled statements still do not.
     assert!(transpile(Oracle, Sqlite, "GRANT SELECT ON t TO r").is_err());
+}
+
+#[test]
+fn to_date_with_a_fixed_width_mask_reads_substrings() {
+    assert_eq!(
+        lite("SELECT TO_DATE(:p, 'YYYYMMDD') FROM t"),
+        "SELECT date(substr(:p, 1, 4) || '-' || substr(:p, 5, 2) || '-' || substr(:p, 7, 2)) FROM t;"
+    );
+    assert_eq!(
+        lite("SELECT TO_DATE(x, 'DD/MM/YYYY HH24:MI') FROM t"),
+        "SELECT datetime(substr(x, 7, 4) || '-' || substr(x, 4, 2) || '-' || substr(x, 1, 2) || ' ' || \
+         substr(x, 12, 2) || ':' || substr(x, 15, 2) || ':' || '00') FROM t;"
+    );
+    // not a complete date, or fields without a fixed width: no exact translation
+    for sql in ["SELECT TO_DATE(x, 'YYYYMM') FROM t", "SELECT TO_DATE(x, 'DD-MON-YYYY') FROM t"] {
+        assert!(transpile(Oracle, Sqlite, sql).unwrap().contains("TO_DATE"), "{sql}");
+    }
+}
+
+#[test]
+fn regexp_replace_with_a_plain_text_pattern_becomes_replace() {
+    assert_eq!(lite("SELECT REGEXP_REPLACE(b.t, '−', '-') FROM b"), "SELECT replace(b.t, '−', '-') FROM b;");
+    assert_eq!(lite("SELECT REGEXP_REPLACE(b.t, 'x') FROM b"), "SELECT replace(b.t, 'x', '') FROM b;");
+    // real patterns, back references and the optional arguments have no exact equivalent
+    for sql in [
+        "SELECT REGEXP_REPLACE(b.t, '[^0-9]+', '') FROM b",
+        "SELECT REGEXP_REPLACE(b.t, 'a.c', 'x') FROM b",
+        "SELECT REGEXP_REPLACE(b.t, 'a', '\\1') FROM b",
+        "SELECT REGEXP_REPLACE(b.t, 'a', 'x', 1, 1) FROM b",
+    ] {
+        assert!(transpile(Oracle, Sqlite, sql).unwrap().contains("REGEXP_REPLACE"), "{sql}");
+    }
 }

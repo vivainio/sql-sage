@@ -81,7 +81,7 @@ pagination (`LIMIT`/`OFFSET` vs `FETCH FIRST`), `MINUS`/`EXCEPT`, `FROM dual`, b
 exact equivalent (`NVL`, `NVL2`, `DECODE`, `GREATEST`/`LEAST`, `LPAD`/`RPAD`, `LISTAGG`/`STRING_AGG`,
 `SYSDATE`/`NOW`/`CURRENT_DATE`, `ADD_MONTHS`, `LAST_DAY`, `TRUNC` on dates, `CHR`, `LNNVL`, `NANVL`, `INSTR` with
 a start, `TO_NUMBER(x)`, `MONTHS_BETWEEN`, `INITCAP` (ASCII letters), `STDDEV`/`VARIANCE` and their `_POP`/`_SAMP` forms, and `TO_CHAR`/`TO_DATE` with
-masks `strftime` can reproduce; other masks stay an error), `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
+masks `strftime` can reproduce, `TO_DATE(x, 'YYYYMMDD')` and other fixed-width masks (read with `substr`, with a warning), `REGEXP_REPLACE` whose pattern is plain text (`replace`); other masks and patterns stay an error), `INSERT OR IGNORE`, and more. `RETURNING`, `IF EXISTS`, `GLOB`, array
 types and similar constructs error on engines that lack them.
 
 Oracle scripts to SQLite also get: `TO_DATE`/`TO_TIMESTAMP` with literal arguments evaluated at

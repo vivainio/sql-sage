@@ -260,7 +260,7 @@ fn more_oracle_functions_become_sqlite_constructs() {
     assert_eq!(o("SELECT LOCALTIMESTAMP FROM dual"), "SELECT datetime('now', 'localtime');");
     // masks and forms without an exact equivalent are left alone
     assert_eq!(o("SELECT TO_CHAR(d, 'Month DD') FROM t"), "SELECT TO_CHAR(d, 'Month DD') FROM t;");
-    assert_eq!(o("SELECT TO_DATE(x, 'DD.MM.YYYY') FROM t"), "SELECT TO_DATE(x, 'DD.MM.YYYY') FROM t;");
+    assert_eq!(o("SELECT TO_DATE(x, 'DD-MON-YYYY') FROM t"), "SELECT TO_DATE(x, 'DD-MON-YYYY') FROM t;");
     assert_eq!(o("SELECT TO_CHAR(n, '999.99') FROM t"), "SELECT TO_CHAR(n, '999.99') FROM t;");
     assert_eq!(o("SELECT INSTR(x, 'a', -1) FROM t"), "SELECT INSTR(x, 'a', -1) FROM t;");
     assert_eq!(o("SELECT GREATEST(a) FROM t"), "SELECT GREATEST(a) FROM t;");

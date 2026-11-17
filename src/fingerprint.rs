@@ -821,6 +821,7 @@ impl Collector {
             }
             Expr::UnaryOp { expr, .. }
             | Expr::Nested(expr)
+            | Expr::OuterJoin(expr)
             | Expr::IsNull(expr)
             | Expr::IsNotNull(expr)
             | Expr::Cast { expr, .. } => self.expr(expr),

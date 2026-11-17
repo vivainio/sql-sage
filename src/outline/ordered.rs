@@ -642,6 +642,7 @@ impl Outline {
                 }
             }
             Expr::Nested(e) => format!("({})", self.expr(e)),
+            Expr::OuterJoin(e) => format!("{} (outer)", self.expr(e)),
             Expr::Tuple(t) => format!("({})", self.exprs(t)),
             Expr::IsNull(e) => format!("{} is null", self.expr(e)),
             Expr::IsNotNull(e) => format!("{} is not null", self.expr(e)),

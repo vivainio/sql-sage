@@ -77,6 +77,14 @@ pub trait Dialect: Debug {
     fn supports_connect_by(&self) -> bool {
         false
     }
+    /// `SELECT UNIQUE ...`, a synonym of `SELECT DISTINCT`.
+    fn supports_select_unique(&self) -> bool {
+        false
+    }
+    /// The legacy outer-join marker: `WHERE a.id = b.id(+)`.
+    fn supports_outer_join_marker(&self) -> bool {
+        false
+    }
     /// SQL*Plus commands (`SET`, `WHENEVER`, a lone `/`, ...) between statements are skipped
     /// when parsing leniently.
     fn supports_sqlplus_commands(&self) -> bool {
@@ -535,6 +543,12 @@ impl Dialect for OracleDialect {
         true
     }
     fn supports_connect_by(&self) -> bool {
+        true
+    }
+    fn supports_select_unique(&self) -> bool {
+        true
+    }
+    fn supports_outer_join_marker(&self) -> bool {
         true
     }
     fn supports_plsql(&self) -> bool {

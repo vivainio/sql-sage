@@ -1297,6 +1297,10 @@ impl<'a> Emitter<'a> {
                 }
             }
             Expr::Nested(e) => format!("({})", self.expr(e)?),
+            Expr::OuterJoin(e) => {
+                self.need(|d| d.supports_outer_join_marker(), "the (+) outer join operator")?;
+                format!("{}(+)", self.expr(e)?)
+            }
             Expr::Tuple(t) => format!("({})", self.list(t, Self::expr)?),
             Expr::IsNull(e) => format!("{} IS NULL", self.expr(e)?),
             Expr::IsNotNull(e) => format!("{} IS NOT NULL", self.expr(e)?),

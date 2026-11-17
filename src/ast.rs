@@ -234,6 +234,8 @@ pub enum Expr {
         negated: bool,
     },
     Subquery(Box<Query>),
+    /// Oracle's legacy outer-join marker: `b.id(+)`
+    OuterJoin(Box<Expr>),
     Cast {
         expr: Box<Expr>,
         data_type: DataType,

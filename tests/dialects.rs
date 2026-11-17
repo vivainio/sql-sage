@@ -133,3 +133,33 @@ fn multiple_statements() {
     assert_eq!(ast(Sqlite, "SELECT 1;; SELECT 2; DROP TABLE IF EXISTS t CASCADE;").len(), 3);
     assert_eq!(ast(Postgres, "  -- nothing\n").len(), 0);
 }
+
+#[test]
+fn oracle_select_unique_is_distinct() {
+    assert_eq!(norm(Oracle, "SELECT UNIQUE a.code FROM t a"), "SELECT DISTINCT a.code FROM t AS a");
+    assert_eq!(norm(Oracle, "SELECT UNIQUE a, b FROM t"), "SELECT DISTINCT a, b FROM t");
+    assert!(check_syntax(Postgres, "SELECT UNIQUE a.code FROM t a").is_err());
+}
+
+#[test]
+fn oracle_outer_join_marker() {
+    assert_eq!(
+        norm(Oracle, "SELECT a.x FROM a, b WHERE a.id = b.id(+) AND b.k(+) = 'x'"),
+        "SELECT a.x FROM a, b WHERE a.id = b.id(+) AND b.k(+) = 'x'"
+    );
+    // a function call named like a column is still a call, and `(+)` is not unary plus on an argument
+    assert_eq!(norm(Oracle, "SELECT f(+1) FROM t"), "SELECT f(+1) FROM t");
+    assert!(check_syntax(Postgres, "SELECT 1 FROM a, b WHERE a.id = b.id(+)").is_err());
+}
+
+#[test]
+fn parenthesised_set_operations_in_from() {
+    assert_eq!(
+        norm(Oracle, "SELECT * FROM ((SELECT 1 a FROM dual) UNION (SELECT 2 FROM dual)) WHERE rownum = 1"),
+        "SELECT * FROM ((SELECT 1 AS a FROM dual) UNION (SELECT 2 FROM dual)) WHERE rownum = 1"
+    );
+    // still a derived table with an alias inside a nested join, and a plain nested join
+    assert!(check_syntax(Oracle, "SELECT * FROM ((SELECT 1 a FROM dual) x JOIN b ON b.id = x.a)").is_ok());
+    assert!(check_syntax(Oracle, "SELECT * FROM ((a JOIN b ON a.i = b.i) JOIN c ON c.i = a.i)").is_ok());
+    assert!(check_syntax(Postgres, "SELECT * FROM ((SELECT 1) UNION (SELECT 2)) s").is_ok());
+}

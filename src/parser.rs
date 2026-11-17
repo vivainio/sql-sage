@@ -1697,7 +1697,9 @@ impl<'a> Parser<'a> {
 
     fn parse_select(&mut self) -> Result<Select> {
         self.expect_keyword("SELECT")?;
-        let distinct = if self.parse_keyword("DISTINCT") {
+        let distinct = if self.parse_keyword("DISTINCT")
+            || (self.dialect.supports_select_unique() && self.parse_keyword("UNIQUE"))
+        {
             if self.dialect.supports_distinct_on() && self.parse_keyword("ON") {
                 self.expect_token(&Token::LParen)?;
                 let e = self.parse_comma_separated(Self::parse_expr)?;
@@ -1861,6 +1863,18 @@ impl<'a> Parser<'a> {
                 self.expect_token(&Token::RParen)?;
                 let alias = self.parse_table_alias()?;
                 return Ok(TableFactor::Derived { subquery, alias });
+            }
+            if *self.peek_token() == Token::LParen {
+                // `((SELECT ..) UNION (SELECT ..))` is a derived table, `((a JOIN b) JOIN c)` a nested join: try the query first.
+                let start = self.index;
+                let derived = self.parse_query().and_then(|q| self.expect_token(&Token::RParen).map(|_| q));
+                match derived {
+                    Ok(q) => {
+                        let alias = self.parse_table_alias()?;
+                        return Ok(TableFactor::Derived { subquery: Box::new(q), alias });
+                    }
+                    Err(_) => self.index = start,
+                }
             }
             let inner = self.parse_table_and_joins()?;
             self.expect_token(&Token::RParen)?;
@@ -2215,6 +2229,16 @@ impl<'a> Parser<'a> {
                     last.value.push_str(&a.value.to_ascii_uppercase());
                 }
             }
+        }
+        if self.dialect.supports_outer_join_marker()
+            && *self.peek_token() == Token::LParen
+            && *self.peek_nth(1) == Token::Plus
+            && *self.peek_nth(2) == Token::RParen
+        {
+            self.index += 3;
+            let column =
+                if parts.len() == 1 { Expr::Identifier(parts.pop().unwrap()) } else { Expr::CompoundIdentifier(parts) };
+            return Ok(Expr::OuterJoin(Box::new(column)));
         }
         if *self.peek_token() == Token::LParen {
             return self.parse_function(ObjectName(parts));

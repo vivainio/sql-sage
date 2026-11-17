@@ -316,3 +316,14 @@ fn months_between_and_initcap_become_sqlite_constructs() {
     // other targets keep the call
     assert_eq!(t(Oracle, Postgres, "SELECT INITCAP(n) FROM t"), "SELECT INITCAP(n) FROM t;");
 }
+
+#[test]
+fn outer_join_marker_is_oracle_only() {
+    assert_eq!(
+        t(Oracle, Oracle, "SELECT a.x FROM a, b WHERE a.id = b.id(+)"),
+        "SELECT a.x FROM a, b WHERE a.id = b.id(+);"
+    );
+    assert!(err(Oracle, Postgres, "SELECT a.x FROM a, b WHERE a.id = b.id(+)").contains("outer join"));
+    assert!(err(Oracle, Sqlite, "SELECT a.x FROM a, b WHERE a.id = b.id(+)").contains("outer join"));
+    assert_eq!(t(Oracle, Postgres, "SELECT UNIQUE a FROM t"), "SELECT DISTINCT a FROM t;");
+}

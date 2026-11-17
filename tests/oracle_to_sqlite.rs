@@ -241,3 +241,18 @@ fn parenthesised_select_operands_lose_their_parentheses() {
     let out = transpile(Oracle, Sqlite, "SELECT a FROM t UNION (SELECT a FROM u ORDER BY a)").unwrap();
     assert!(out.contains("(SELECT a FROM u ORDER BY a)"), "{out}");
 }
+
+#[test]
+fn to_char_with_month_abbreviations_and_two_digit_years() {
+    assert_eq!(
+        lite("SELECT TO_CHAR(d, 'YY-MON-DD') FROM t"),
+        "SELECT substr(strftime('%Y', d), 3, 2) || '-' || substr('JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC', \
+         (CAST(strftime('%m', d) AS INTEGER) - 1) * 3 + 1, 3) || strftime('-%d', d) FROM t;"
+    );
+    // the case of the mask picks the case of the month name
+    assert!(lite("SELECT TO_CHAR(d, 'DD-Mon-YYYY') FROM t").contains("'JanFebMar"));
+    assert!(lite("SELECT TO_CHAR(d, 'DD-mon-YYYY') FROM t").contains("'janfebmar"));
+    // text in quotes is not a month; full month names (blank padded in Oracle) are not translated
+    assert_eq!(lite("SELECT TO_CHAR(d, '\"Monday\" YYYY') FROM t"), "SELECT strftime('Monday %Y', d) FROM t;");
+    assert!(transpile(Oracle, Sqlite, "SELECT TO_CHAR(d, 'DD MONTH YYYY') FROM t").unwrap().contains("TO_CHAR"));
+}

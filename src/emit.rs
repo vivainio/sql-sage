@@ -1769,11 +1769,14 @@ impl<'a> Emitter<'a> {
                 }))
             }
             ("TO_CHAR", [d, Expr::Value(Value::String(mask))]) => {
-                let fmt = strftime_format(mask)?;
-                Some(
-                    self.expr(d)
-                        .and_then(|d| self.done("TO_CHAR -> strftime", format!("strftime({}, {d})", quote_str(&fmt)))),
-                )
+                let uses_month_names = mask_pieces(mask)?.iter().any(|p| matches!(p, MaskPiece::Month(_)));
+                Some(self.expr(d).and_then(|d| {
+                    let out = to_char_sqlite(&d, mask).expect("the mask was read above");
+                    if uses_month_names {
+                        self.note(Severity::Warning, "TO_CHAR with MON assumes English month names", None);
+                    }
+                    self.done("TO_CHAR -> strftime", out)
+                }))
             }
             ("TO_DATE" | "TO_TIMESTAMP", [x, Expr::Value(Value::String(mask))]) => {
                 let f = match mask.to_ascii_uppercase().as_str() {
@@ -2033,33 +2036,91 @@ fn fixed_width_parts(mask: &str) -> Option<Vec<(&'static str, usize, usize)>> {
     (distinct && has("YYYY") == 1 && has("MM") == 1 && has("DD") == 1 && time_ok).then_some(parts)
 }
 
-/// An Oracle/PostgreSQL date mask as a `strftime` format, or `None` when it
-/// uses anything that has no exact equivalent (month names, `FM`, `AM`, ...).
-fn strftime_format(mask: &str) -> Option<String> {
+/// One piece of a date mask: text `strftime` can produce, or an English month abbreviation (`MON`), which it cannot.
+#[derive(Debug, PartialEq)]
+enum MaskPiece {
+    Strftime(String),
+    /// `MON`, `Mon` or `mon`: the three letters of the month, in the case the mask is written in
+    Month(&'static str),
+    /// `YY`: SQLite's `strftime` has no `%y` (it answers NULL), so the last two digits of `%Y`
+    TwoDigitYear,
+}
+
+const MONTHS_UPPER: &str = "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC";
+const MONTHS_TITLE: &str = "JanFebMarAprMayJunJulAugSepOctNovDec";
+const MONTHS_LOWER: &str = "janfebmaraprmayjunjulaugsepoctnovdec";
+
+/// An Oracle/PostgreSQL date mask split into `strftime` formats and month names, or `None` when it
+/// uses anything that has no exact equivalent (`MONTH`, `FM`, `AM`, ...).
+fn mask_pieces(mask: &str) -> Option<Vec<MaskPiece>> {
     const TOKENS: [(&str, &str); 7] =
         [("YYYY", "%Y"), ("HH24", "%H"), ("DDD", "%j"), ("MM", "%m"), ("DD", "%d"), ("MI", "%M"), ("SS", "%S")];
     if !mask.is_ascii() {
         return None;
     }
     let upper = mask.to_ascii_uppercase();
-    let (mut i, mut out) = (0, String::new());
+    let (mut i, mut pieces, mut fmt) = (0, vec![], String::new());
     while i < mask.len() {
         let rest = &upper[i..];
-        if let Some((tok, f)) = TOKENS.iter().find(|(t, _)| rest.starts_with(t)) {
-            out.push_str(f);
+        if rest.starts_with("MONTH") {
+            return None;
+        } else if rest.starts_with("MON") {
+            if !fmt.is_empty() {
+                pieces.push(MaskPiece::Strftime(std::mem::take(&mut fmt)));
+            }
+            let written = &mask[i..i + 3];
+            pieces.push(MaskPiece::Month(if written == "MON" {
+                MONTHS_UPPER
+            } else if written == "mon" {
+                MONTHS_LOWER
+            } else if written == "Mon" {
+                MONTHS_TITLE
+            } else {
+                return None;
+            }));
+            i += 3;
+        } else if rest.starts_with("YY") && !rest.starts_with("YYYY") {
+            if !fmt.is_empty() {
+                pieces.push(MaskPiece::Strftime(std::mem::take(&mut fmt)));
+            }
+            pieces.push(MaskPiece::TwoDigitYear);
+            i += 2;
+        } else if let Some((tok, f)) = TOKENS.iter().find(|(t, _)| rest.starts_with(t)) {
+            fmt.push_str(f);
             i += tok.len();
         } else if let Some(quoted) = rest.strip_prefix('"') {
             let end = quoted.find('"')? + 1;
-            out.push_str(&mask[i + 1..i + end].replace('%', "%%"));
+            fmt.push_str(&mask[i + 1..i + end].replace('%', "%%"));
             i += end + 1;
         } else if matches!(rest.as_bytes()[0], b'-' | b'/' | b':' | b'.' | b',' | b' ') {
-            out.push_str(&mask[i..=i]);
+            fmt.push_str(&mask[i..=i]);
             i += 1;
         } else {
             return None;
         }
     }
-    Some(out)
+    if !fmt.is_empty() {
+        pieces.push(MaskPiece::Strftime(fmt));
+    }
+    Some(pieces)
+}
+
+/// A `TO_CHAR` mask as SQLite spells it for the date text `d`: `strftime` for everything it can
+/// produce, the month abbreviations cut out of a literal. `None` when the mask has no exact equivalent.
+fn to_char_sqlite(d: &str, mask: &str) -> Option<String> {
+    let parts: Vec<String> = mask_pieces(mask)?
+        .into_iter()
+        .map(|p| match p {
+            // plain text between two fields needs no strftime; NULL still wins through `||`
+            MaskPiece::Strftime(f) if !f.contains('%') => quote_str(&f),
+            MaskPiece::Strftime(f) => format!("strftime({}, {d})", quote_str(&f)),
+            MaskPiece::TwoDigitYear => format!("substr(strftime('%Y', {d}), 3, 2)"),
+            MaskPiece::Month(names) => {
+                format!("substr('{names}', (CAST(strftime('%m', {d}) AS INTEGER) - 1) * 3 + 1, 3)")
+            }
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" || "))
 }
 
 /// `TO_DATE('01/02/2020 1:05:00 PM', 'MM/DD/YYYY HH:MI:SS AM')` evaluated at translation time,
